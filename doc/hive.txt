@@ -1,0 +1,400 @@
+================================================================================
+INTRODUCTION                                                             *hive*
+
+hive.nvim queries an OpenAI-compatible HTTP API from Neovim and hands the
+result back to Lua. It shells out to `curl` through |vim.system()| — no
+Lua HTTP library, no external plugin dependencies.
+
+The current scope is deliberately narrow: a single endpoint
+(`POST /v1/completions`), hard-coded headers and configuration, and a Lua API
+that takes a prompt and a token budget. Rendering completions into scratch
+buffers, virtual text and floating windows is not implemented yet.
+
+Links:
+- Changelog: https://github.com/brichar01/hive.nvim/blob/main/CHANGELOG.md
+- License (MIT): https://github.com/brichar01/hive.nvim/blob/main/LICENSE
+
+Table of contents:
+
+1. REQUIREMENTS: What hive.nvim needs to run.               |hive-requirements|
+2. INSTALLATION: How to install the plugin.                 |hive-installation|
+3. CONFIGURATION: Available options and their defaults.           |hive-config|
+4. COMMANDS: Commands provided by the plugin.                   |hive-commands|
+5. API: Exposed Lua functions.                                       |hive-api|
+6. MODULES: How the source is organised.                         |hive-modules|
+7. DEVELOPMENT: Testing, formatting, and release workflows.  |hive-development|
+8. CI/CD TOKENS: Secrets and tokens for GitHub Actions.           |hive-tokens|
+9. TROUBLESHOOTING: Common issues and solutions.         |hive-troubleshooting|
+
+================================================================================
+REQUIREMENTS                                                *hive-requirements*
+
+- Neovim ≥ 0.12.2
+- curl (https://curl.se/) — every request is a `curl` subprocess
+- An OpenAI-compatible server reachable at |hive-config| `base_url`,
+  serving `POST /v1/completions`. llama.cpp's `llama-server`, vLLM and
+  LM Studio all work.
+
+No authorization is sent. hive.nvim targets a local, unauthenticated server.
+
+For development you also need StyLua, LuaLS, git and Make — see
+|hive-development|.
+
+================================================================================
+INSTALLATION                                                *hive-installation*
+
+Using lazy.nvim:
+
+>lua
+  {
+    "brichar01/hive.nvim",
+    cmd = "Hive",
+    opts = {},
+  }
+<
+
+Calling `setup()` is optional — see |hive-config|.
+
+================================================================================
+CONFIGURATION                                                     *hive-config*
+
+hive.nvim works out of the box with hard-coded defaults, so `setup()` is
+optional. Call it only to override one of the values below.
+
+                                                                 *hive.setup()*
+hive.setup({opts}) ~
+
+>lua
+  {
+    -- Root URL of the OpenAI-compatible server (no trailing slash needed).
+    base_url = "http://localhost:8080",
+
+    -- Model name sent in the request body. Local servers usually ignore it.
+    model = "default",
+
+    -- Request timeout in milliseconds.
+    timeout = 60000,
+
+    -- Headers sent with every request. No Authorization header is set.
+    headers = {
+      ["Content-Type"] = "application/json",
+      ["Accept"] = "application/json",
+    },
+  }
+<
+
+Invalid options are reported via `vim.notify()` and the whole table falls
+back to the defaults. A trailing slash on `base_url` is stripped.
+
+Read the merged configuration through the `hive.config` module:
+
+>lua
+  local Config = require("hive.config")
+  print(Config.base_url)      -- current value
+  print(Config.defaults().model)  -- hard-coded default
+<
+
+================================================================================
+COMMANDS                                                        *hive-commands*
+
+:Hive complete {prompt} ~
+  Send {prompt} to `/v1/completions` with a 256-token budget and display the
+  result with `vim.notify()`. The request is asynchronous — Neovim stays
+  responsive while the server generates.
+
+  This is a convenience wrapper for manual testing. Use |hive.completions()|
+  for anything programmatic; it lets you set the token budget.
+
+:Hive health ~
+  Shorthand for `:checkhealth hive`.
+
+:checkhealth hive ~
+  Verify that the configuration is well-typed, that `curl` is on $PATH, and
+  that the configured server answers.
+
+================================================================================
+API                                                                  *hive-api*
+
+                                                           *hive.completions()*
+hive.completions({prompt}, {max_tokens}, {callback}) ~
+
+  Request a text completion from `POST /v1/completions`.
+
+  Parameters: ~
+    {prompt}      (string) the prompt to complete. Must not be empty.
+    {max_tokens}  (integer) maximum number of tokens to generate. Must be a
+                  positive integer.
+    {callback}    (function|nil) `fun(err: string|nil, completion: table|nil)`.
+                  When given, the call is asynchronous and returns nothing;
+                  the callback runs via |vim.schedule()|, so it is safe to
+                  touch buffers and windows from it. When omitted, the call
+                  blocks and returns `(err, completion)`.
+
+  Return (blocking mode only): ~
+    {err}         (string|nil) error message, or nil on success
+    {completion}  (table|nil) see below, or nil on failure
+
+  Completion table: ~
+    {text}           (string) the generated text
+    {finish_reason}  (string|nil) "stop", "length", ...
+    {usage}          (table|nil) token accounting reported by the server
+    {raw}            (table) the decoded response body, verbatim
+
+  Exactly one of {err} and {completion} is ever set. Errors are plain
+  strings: argument validation failures, curl transport failures
+  ("failed to connect to host"), and server errors ("HTTP 400: ...").
+
+  Asynchronous usage: ~
+>lua
+    local hive = require("hive")
+
+    hive.completions("The capital of France is", 16, function(err, out)
+      if err then
+        vim.notify(err, vim.log.levels.ERROR)
+        return
+      end
+      vim.notify(out.text)
+    end)
+<
+
+  Blocking usage: ~
+>lua
+    local err, out = require("hive").completions("2 + 2 =", 8)
+    print(err or out.text)
+<
+
+hive.setup({opts}) ~
+  Optional. See |hive.setup()| under |hive-config|.
+
+================================================================================
+MODULES                                                          *hive-modules*
+
+`hive` (lua/hive/init.lua) ~
+  Public entry point. Re-exports `setup()` and `completions()`.
+
+`hive.api` (lua/hive/api.lua) ~
+  OpenAI endpoint bindings. Builds the `/v1/completions` request body from
+  the configuration and decodes the response. `completions_request()` and
+  `parse_completion()` are exposed separately so the request-building and
+  response-parsing logic can be tested without a server.
+
+`hive.curl` (lua/hive/curl.lua) ~
+  Transport. Knows nothing about OpenAI — it builds a `curl` argv, runs it
+  through |vim.system()|, and returns `{ status, body }`.
+
+  The request body is written to curl's stdin (`--data-binary @-`) so large
+  prompts never reach the command line. The HTTP status is recovered from
+  `--write-out`, appended to stdout behind a marker, which keeps the body
+  byte-exact. `build_args()` is exposed for testing and debugging:
+
+>lua
+    vim.print(require("hive.curl").build_args({
+      url = "http://localhost:8080/v1/completions",
+      method = "POST",
+      body = "{}",
+    }))
+<
+
+`hive.config` (lua/hive/config.lua) ~
+  Hard-coded defaults, validation, and the merged configuration table.
+
+`hive.util` (lua/hive/util.lua) ~
+  Notification helpers that tag messages with the plugin title.
+
+`hive.health` (lua/hive/health.lua) ~
+  `:checkhealth hive` implementation.
+
+================================================================================
+DEVELOPMENT                                                  *hive-development*
+
+Testing: ~
+
+Run tests using mini.test via lazy.minit:
+>bash
+  # Run all tests
+  make test
+
+  # Run a single test file
+  make test-one MODULE=api
+
+  # Run explicit file
+  nvim -l tests/minit.lua --minitest tests/curl_spec.lua
+<
+
+The suite runs without a server: transport errors are exercised against a
+closed port, and response handling is exercised against synthetic payloads.
+One test in `tests/api_spec.lua` hits the configured `base_url` and skips
+itself when nothing answers.
+
+Health Checks: ~
+>vim
+  :checkhealth hive
+<
+
+Minimal Reproduction: ~
+>bash
+  nvim -u repro/repro.lua
+<
+
+Code Formatting: ~
+>bash
+  # Check formatting
+  make lint
+
+  # Auto-format all Lua files
+  make format
+<
+
+Formatting settings are defined in `stylua.toml` (2-space indentation,
+double quotes, 120 column width, Unix line endings).
+
+Generate Help Tags: ~
+
+After modifying `doc/hive.txt`, regenerate the tags file:
+>vim
+  :helptags doc/
+<
+
+Or from the command line:
+>bash
+  nvim -c "helptags doc/" -c "q"
+<
+
+Release Automation: ~
+
+- Running tests on every push (GitHub Actions)
+- Type checking with LuaLS
+- Automated releases based on conventional commits
+- LuaRocks package publishing via release-please
+
+Use conventional commit format for automatic versioning:
+- `feat:` for new features (minor version bump)
+- `fix:` for bug fixes (patch version bump)
+- `BREAKING CHANGE:` for breaking changes (major version bump)
+
+A more detailed explanation for conventional commits can be found at
+https://www.conventionalcommits.org/.
+
+================================================================================
+CI/CD TOKENS                                                      *hive-tokens*
+
+The CI/CD workflows require the following secrets to be configured in your
+GitHub repository. Navigate to Settings > Secrets and variables > Actions and
+add each secret as a repository secret.
+
+GITHUB_TOKEN: ~
+
+Automatically provided by GitHub Actions. No manual setup required.
+Used by the CI workflow for StyLua formatting checks.
+
+PAT (Personal Access Token): ~
+
+A Fine-grained Personal Access Token used by release-please to create
+release pull requests and GitHub releases. Using a PAT instead of the
+default `GITHUB_TOKEN` ensures that release PRs trigger other workflow
+runs (e.g., CI checks on the PR).
+
+To create a Fine-grained PAT:
+
+1. Go to https://github.com/settings/personal-access-tokens/new
+2. Set a descriptive name (e.g., "release-please")
+3. Set expiration as needed
+4. Under "Repository access", select "Only select repositories"
+   and choose your plugin repository
+5. Under "Permissions" > "Repository permissions", grant:
+   - Contents: Read and write
+   - Pull requests: Read and write
+6. Generate the token and copy the value
+7. Add it as the `PAT` secret in your repository settings
+
+You may also need to enable "Allow GitHub Actions to create and approve
+pull requests" under Settings > Actions > General.
+
+LUAROCKS_API_KEY: ~
+
+An API key from luarocks.org used by luarocks-tag-release to automatically
+publish your plugin to LuaRocks when a release is created.
+
+To obtain a LuaRocks API key:
+
+1. Create an account at https://luarocks.org
+2. Go to Settings > API Keys
+   (https://luarocks.org/settings/api-keys)
+3. Generate a new API key
+4. Add it as the `LUAROCKS_API_KEY` secret in your repository settings
+
+Summary: ~
+
+>text
+  Secret name        Used by                Setup required
+  ----------------------------------------------------------------------
+  GITHUB_TOKEN       StyLua (ci.yml)        Automatic
+  PAT                release-please         Manual (Fine-grained PAT)
+  LUAROCKS_API_KEY   luarocks-tag-release   Manual (luarocks.org)
+<
+
+================================================================================
+TROUBLESHOOTING                                          *hive-troubleshooting*
+
+First, run the health check to identify issues:
+>vim
+  :checkhealth hive
+<
+
+"curl executable not found in $PATH" ~
+  Install curl. Every request is a curl subprocess.
+
+"failed to connect to host" ~
+  Nothing is listening on `base_url`. Start the server, or point `base_url`
+  somewhere else with |hive.setup()|.
+
+"operation timed out" ~
+  The server accepted the connection but did not finish generating within
+  `timeout` milliseconds. Raise `timeout` or lower `max_tokens`.
+
+"HTTP 404: ..." ~
+  The server does not implement `/v1/completions`. Some servers only expose
+  the newer `/v1/chat/completions`; that endpoint is not implemented here.
+
+"response body is not valid JSON" ~
+  Usually a proxy or a plain web server answering instead of the API. Check
+  `base_url`.
+
+Inspecting the request: ~
+
+`hive.curl.build_args()` returns the exact argv that would be executed, so
+you can reproduce a request in a shell:
+
+>lua
+  vim.print(require("hive.api").completions_request("hello", 16))
+<
+
+Reproducing in a clean environment: ~
+
+1. Clone hive.nvim and cd into the directory
+2. Run `nvim -u repro/repro.lua`
+3. Run `:checkhealth hive`
+4. Try to reproduce the issue
+5. Report the repro.lua and any error messages
+
+>bash
+  # Run a script after loading repro/repro.lua
+  nvim -u repro/repro.lua -l <script.lua>
+
+  # Run a command and quit
+  nvim --headless -u repro/repro.lua -c "Hive complete hello" -c "q"
+<
+
+Manual Testing: ~
+>vim
+  :Hive complete The capital of France is
+<
+
+>vim
+  :lua vim.print({ require("hive").completions("2 + 2 =", 8) })
+  :lua require("hive").setup({ base_url = "http://127.0.0.1:9000" })
+  :lua print(require("hive.config").base_url)
+<
+
+================================================================================
+vim:tw=78:ts=8:et:ft=help:norl:

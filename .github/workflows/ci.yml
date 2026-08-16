@@ -14,7 +14,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           version: "2.4.1"
-          args: --check lua/ tests/
+          args: --check lua/ plugin/ tests/
 
   typecheck:
     runs-on: ubuntu-latest

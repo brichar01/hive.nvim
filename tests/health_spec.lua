@@ -1,37 +1,40 @@
 ---@module 'luassert'
 
-local health = require("base.health")
-local base = require("base")
+local health = require("hive.health")
+local hive = require("hive")
 
 describe("health check", function()
+  after_each(function()
+    hive.did_setup = false
+    hive.setup({})
+  end)
+
   it("runs with default config without errors", function()
-    base.did_setup = false
-    base.setup({})
+    hive.did_setup = false
+    hive.setup({})
     assert.has_no.errors(function()
       health.check()
     end)
   end)
 
   it("runs with custom config without errors", function()
-    base.did_setup = false
-    base.setup({ name = "Test User" })
+    hive.did_setup = false
+    hive.setup({ base_url = "http://127.0.0.1:9000", model = "test-model" })
     assert.has_no.errors(function()
       health.check()
     end)
   end)
 
   it("handles invalid config gracefully", function()
-    base.did_setup = false
-    base.setup({ name = 123 })
+    hive.did_setup = false
+    hive.setup({ base_url = 123 })
     assert.has_no.errors(function()
       health.check()
     end)
   end)
 
-  it("reports error when setup() was not called", function()
-    -- Create a fresh health module to test without setup
-    base.did_setup = false
-    -- Don't call setup — health should report the issue
+  it("runs when setup() was never called", function()
+    hive.did_setup = false
     assert.has_no.errors(function()
       health.check()
     end)

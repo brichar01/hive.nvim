@@ -7,13 +7,13 @@ test-one:
 	nvim -l tests/minit.lua --minitest tests/$(MODULE)_spec.lua
 
 lint:
-	stylua --check lua/ tests/
+	stylua --check lua/ plugin/ tests/
 
 format:
-	stylua lua/ tests/
+	stylua lua/ plugin/ tests/
 
 typecheck:
-	@export TMPFILE="/tmp/base_vimruntime" && \
+	@export TMPFILE="/tmp/hive_vimruntime" && \
 		nvim --headless -c 'lua io.open(os.getenv("TMPFILE"),"w"):write(vim.env.VIMRUNTIME or ""):close()' -c 'q' 2>/dev/null && \
 		VIMRUNTIME="$$(cat "$$TMPFILE")" && rm -f "$$TMPFILE" && \
 		test -n "$$VIMRUNTIME" && \
