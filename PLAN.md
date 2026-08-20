@@ -11,11 +11,14 @@ the next step, and that is where the subtle correctness work lives.
 
 This document is a research write-up: the patterns, where they live in real
 code, and the tradeoffs. §1–§8 were read on this machine — `$VIMRUNTIME` =
-`/usr/share/nvim/runtime` (NVIM v0.12.4) and `~/.local/share/nvim/lazy/`. §9
-covers `copilot.lua`, `supermaven-nvim`, `codecompanion.nvim` and `avante.nvim`,
+`/usr/local/share/nvim/runtime` (NVIM v0.12.4) and `~/.local/share/nvim/lazy/`.
+§9 covers `copilot.lua`, `supermaven-nvim`, `codecompanion.nvim` and `avante.nvim`,
 which are not installed here and were read from their GitHub sources — these are
 the plugins whose entire purpose is shipping buffer text to an external process,
 so they are the closest analogues to where hive is heading.
+
+§11 is a second question, added later: which *part* of a buffer to send. It
+was measured on this machine against NVIM v0.12.4.
 
 ---
 
@@ -1293,6 +1296,345 @@ And from the four AI plugins specifically (§9):
   (§9.6). That sidesteps the entire staleness problem for the streaming case,
   and it's the one design decision all four plugins get wrong somewhere.
 
+## 11. Selecting code down conceptual lines
+
+§1–§10 answer *how to ship bytes*. This section answers *which bytes*: given a
+cursor, cut the enclosing function or class, its signature, the nearby
+signatures, and whatever else a small local model needs in a FIM prompt.
+
+Everything below was measured on this machine. `$VIMRUNTIME` is
+`/usr/local/share/nvim/runtime` (NVIM v0.12.4), and the query supply is
+`~/.local/share/nvim/lazy/nvim-treesitter` (main branch) plus
+`~/.local/share/nvim/lazy/arborist.nvim`. Three plugins worth stealing from are
+named in §11.12 and were **not** read: they are not installed here.
+
+### 11.1 Three layers, and what each one cannot do
+
+| Layer | Answers | Cannot answer | Latency |
+| --- | --- | --- | --- |
+| **treesitter** | where does this construct start and end | what is this identifier, where else is it used | sync, sub-millisecond warm |
+| **LSP** | what is related to this, across files | anything, while the server is still indexing | one round trip, async only |
+| **vimscript lists** | what did the user touch recently | anything structural | sync, free |
+
+The split that matters for FIM: **treesitter is the only layer callable from
+`InsertCharPre`**. LSP has no synchronous mode, so a keystroke-triggered
+completion can only use LSP data that was already cached from an earlier tick.
+And neither layer knows about recency, which is the single cheapest useful
+signal a completion prompt can carry.
+
+### 11.2 Treesitter: the boundary layer
+
+The whole enclosing-construct walk is four core calls:
+
+| Task | Call | Site |
+| --- | --- | --- |
+| node under cursor | `vim.treesitter.get_node()` | `treesitter.lua:394` |
+| walk outward | `node:parent()` | C |
+| extract | `vim.treesitter.get_node_text()` | `treesitter.lua:232` |
+| widen as a user action | `vim.treesitter.select('parent')` | `treesitter.lua:520` |
+
+**`get_node()` on an unparsed tree returns a wrong node, and says so.** The
+docstring at `treesitter.lua:382` reads "Calling this on an unparsed tree can
+yield an invalid node", and points at
+`vim.treesitter.get_parser(bufnr):parse(range)`. On the `InsertCharPre` path
+nothing guarantees the highlighter has run for the current tick, so the parse
+has to be explicit. Per §11.5 it costs 0.76 ms.
+
+**Do not match node types by substring.** `while n:type():find('function')` is
+the obvious walk and it stops at the first lambda. With the cursor on
+`lua/hive/curl.lua:125`, inside the `vim.schedule(function()` callback at
+`:123`, it returns a `function_definition` with no name and no
+`prev_named_sibling`, so §11.3's doc-comment walk then indexes nil. Test for the
+language's named declaration type, or for the presence of a name field.
+
+`select()` is new in 0.12 and takes
+`'parent'|'child'|'next'|'prev'|'extend_next'|'extend_prev'`, dispatching to
+`treesitter/_select.lua`. It maintains a parent chain rather than re-deriving
+the node each call, so repeated presses do not drift. Read it before writing a
+"grow the context" mapping by hand.
+
+Use `get_node_text` rather than `nvim_buf_get_text` directly. Its
+`buf_range_get_text` helper (`treesitter.lua:203`) carries the `end_col == 0`
+fixup, `append_newline` at `:205`, which is the same trailing-newline bug class
+as §1 and already noted in §6.
+
+**The signature is one field access, no query needed.** For
+`function M.request` in `lua/hive/curl.lua:119`:
+
+```lua
+local fn   = -- walked to function_declaration, rows 118-149
+local body = fn:field('body')[1]           -- block, rows 119-148
+-- signature = rows fn:start() .. body:start()-1
+```
+
+Row numbers here are treesitter's, 0-indexed. A `file:line` reference is
+1-indexed, so the same declaration is row 118 and `curl.lua:119`.
+
+Measured: `block` rows 119–148, so the signature slice is row 118 alone, which
+is `function M.request(req, callback)`.
+
+**`body` is a field on every grammar tested.** Eleven parsers from
+`~/.local/share/nvim/site/parser`, one function each:
+
+| Language | Declaration node | `body` field |
+| --- | --- | --- |
+| `lua` | `function_declaration` | `block` |
+| `python` | `function_definition` | `block` |
+| `javascript` | `function_declaration` | `statement_block` |
+| `typescript` | `function_declaration` | `statement_block` |
+| `rust` | `function_item` | `block` |
+| `go` | `function_declaration` | `block` |
+| `c` | `function_definition` | `compound_statement` |
+| `cpp` | `function_definition` | `compound_statement` |
+| `java` | `method_declaration` | `block` |
+| `c_sharp` | `method_declaration` | `block` |
+| `ruby` | `method` | `body_statement` |
+
+So the *signature* slice needs no per-language table at all: find the enclosing
+node that has a `body` field, and cut from its start to the body's start. The
+enclosing-*node* step does need one, because those eleven languages give five
+distinct type names, and that five-entry table is what `textobjects.scm` would
+have saved (§11.6). Note the C and C++ rows: there is no
+`name` field, the name is inside `declarator`, so anything keying on `name`
+breaks there.
+
+### 11.3 Doc comments are siblings, not children
+
+This is the finding worth acting on first, because it fails silently.
+
+`function M.request` starts at `lua/hive/curl.lua:119`. Its LuaCATS block, nine
+lines with the parameter and return types, occupies lines 110–118. Those nine
+lines are **not inside the `function_declaration` node**. A cut of the node
+range drops the most information-dense text in the file and the prompt still
+looks fine.
+
+Confirmed by walking `prev_named_sibling()` from the declaration: nine
+consecutive `comment` siblings, the block starting at row 109 (line 110)
+against the function's row 118.
+
+```lua
+local first = fn:start()
+local n = fn
+while true do
+  local prev = n:prev_named_sibling()
+  if not prev or prev:type() ~= 'comment' then break end
+  local _, _, prev_end = prev:range()
+  if prev_end < first - 1 then break end   -- blank line: not attached
+  first, n = prev:start(), prev
+end
+```
+
+The `prev_end < first - 1` guard is the whole trick. Without it the walk keeps
+climbing through unrelated comments further up the file.
+
+**Python is the exception.** A docstring is the first statement of the body, so
+it is inside the node, and a signature-only slice cuts it off instead. Two
+opposite bugs from one naive implementation.
+
+**LSP does not have this problem, by specification.** `lsp.DocumentSymbol.range`
+is "the range enclosing this symbol not including leading/trailing whitespace
+but everything else like comments"
+(`lsp/_meta/protocol.lua:1336`). So the two sources disagree on where a function
+begins, deliberately. Do not mix them in one prompt without normalising to one
+convention first.
+
+### 11.4 Injected languages change the answer and the prompt
+
+`LanguageTree:language_for_range` (`languagetree.lua:1444`) gives the real
+language at a position. Measured on a markdown buffer with a fenced Lua block:
+
+| Row | Content | `language_for_range` |
+| --- | --- | --- |
+| 0 | `# t` | `markdown` |
+| 3 | `local x = 1` inside ```` ```lua ```` | `lua` |
+| 6 | plain prose | `markdown_inline` |
+
+`parse()` alone is not enough here. Injections only exist after
+`parse(true)`, which parses the child trees as well, and without it every row
+above reports `markdown`. That is a third silent-wrong-answer case, alongside the
+two in §11.2.
+
+Two consequences. The enclosing node has to come from the injected tree, via
+`tree_for_range` (`:1394`) or `node_for_range` (`:1421`), not from the root
+parser. And the language tag in the FIM prompt has to match, which means row 6
+shows the output is a *parser* name and not a language name. Map it before
+putting it in a prompt.
+
+### 11.5 Parse cost is not a reason to avoid any of this
+
+Measured on `lua/hive/curl.lua`, 152 lines:
+
+| Operation | Time |
+| --- | --- |
+| `get_parser()`, loads the parser library | 22.06 ms |
+| first `parse()` | 1.55 ms |
+| `parse()` with no edit since | 0.006 ms |
+| `parse()` after a one-character insert | 0.76 ms |
+
+The 22 ms is once per language per session and happens on `FileType` anyway if
+highlighting is on. The number that matters for `InsertCharPre` is 0.76 ms.
+There is no budget argument for keeping a stale tree or debouncing the parse.
+
+### 11.6 Query supply is a dependency decision, already half made
+
+Core ships queries for seven languages only: `c`, `lua`, `markdown`,
+`markdown_inline`, `query`, `vim`, `vimdoc`. Counts of language directories
+carrying each query, on this rtp today:
+
+| Query | Core | nvim-treesitter | arborist.nvim |
+| --- | --- | --- | --- |
+| `highlights` | 7 | 323 | 330 |
+| `injections` | 6 | 300 | 306 |
+| `folds` | 5 | 224 | 225 |
+| `indents` | 0 | 168 | 169 |
+| `locals` | 0 | 151 | 151 |
+| `textobjects` | 0 | 0 | 0 |
+
+Two things fall out of that table.
+
+**`textobjects.scm` is not here.** `@function.outer` and `@class.outer` are the
+obvious way to name constructs across languages, and nothing on this rtp
+supplies them. Main-branch nvim-treesitter does not carry them and
+nvim-treesitter-textobjects is not installed. Using them is adding a
+dependency, not using what is already present.
+
+**Read queries through core, depend on neither plugin.**
+`vim.treesitter.query.get(lang, name)` (`treesitter/query.lua:290`, memoized,
+with `get_files` at `:158`) resolves from the rtp. Both plugins are then just
+files on the rtp and hive imports neither Lua API. Core itself is not ready to
+be the supply: `treesitter/_headings.lua:7` still carries
+`TODO(clason): use runtimepath queries (for other languages)` above a table of
+hardcoded heading queries.
+
+### 11.7 `folds.scm` is the free language-agnostic chunker
+
+`folds` covers 224 languages against `locals`'s 151, and it needs no plugin API.
+Core's Lua `folds.scm` captures `do_statement`, `while_statement`,
+`repeat_statement`, `if_statement`, `for_statement`, `function_declaration`,
+`function_definition`, `parameters`, `arguments` and `table_constructor` as
+`@fold`. Filtering `curl.lua`'s captures to ranges over three lines gives 13
+chunks.
+
+Coarser than textobjects, because `parameters` and `arguments` are structurally
+uninteresting for a prompt, and there is no capture name to tell a function from
+a loop. Good enough to answer "give me the next-largest complete construct", and
+`vim.treesitter.foldexpr` (`treesitter.lua:511`, backed by
+`treesitter/_fold.lua`) is the same data if a fold level is easier to consume
+than a node.
+
+### 11.8 `locals.scm` is the retrieval trigger
+
+The interesting question for a FIM prompt is not "what is near the cursor", it
+is "what does this code use that is defined somewhere else". `locals.scm`
+answers it without a language server: collect `@local.scope` and
+`@local.definition.*`, then any `@local.reference` with no matching definition in
+an enclosing scope is a candidate for cross-file retrieval.
+
+arborist implements exactly this lookup in `lua/arborist/locals.lua`.
+`find_definition_kind(node, bufnr)` returns the captured definition kind, or
+`nil` when nothing is in scope, and caches per `changedtick` in a weak-valued
+table. It is O(definitions) with a text comparison per candidate, which is fine
+per keystroke on one buffer and not fine over a project.
+
+**The caveat that makes a naive version useless.** Both `lua/locals.scm:54` and
+`python/locals.scm:124` are a bare `(identifier) @local.reference`, so every
+identifier matches, field names included. Run it over `M.request` in
+`curl.lua` and the free-reference set is:
+
+```
+executable, fn, schedule, stdin, system, text, vim, wait
+```
+
+Eight names, of which seven are fields of `vim`. The only real signal is `vim`
+itself. Filter to identifiers that are not the field side of a
+`dot_index_expression`, or `attribute` in Python, before treating the set as a
+retrieval list.
+
+For scale, `curl.lua` yields 16 scopes and 24 distinct definitions.
+
+### 11.9 What LSP adds, and what it costs
+
+| Want | Method | Core wrapper |
+| --- | --- | --- |
+| file outline, nearby signatures | `textDocument/documentSymbol` | `lsp/buf.lua:918` |
+| resolve a free identifier | `textDocument/definition`, or `textDocument/hover` | `lsp/buf.lua:343`, `:75` |
+| callers and callees of this function | `callHierarchy/incomingCalls`, `outgoingCalls` | `lsp/buf.lua:1020`, `:1027` |
+| semantic widen | `textDocument/selectionRange` | `lsp/buf.lua:1506` |
+
+`DocumentSymbol.detail` is specified as "More detail for this symbol, e.g the
+signature of a function" (`lsp/_meta/protocol.lua:1320`). That is a rendered
+signature for every symbol in the file, hierarchical, for one request, and with
+no per-language query to maintain. It is the best tokens-per-round-trip in the
+list.
+
+Call hierarchy is the strongest cross-file signal and the most expensive: two
+requests, and the results are positions that then have to be read. Cache per
+`changedtick`, per §10.
+
+`M.selection_range(direction, timeout_ms)` (`:1506`) keeps its
+hierarchy in a module-level `selection_ranges` (`:1471`) and walks an index, so
+repeated calls cost one request. It differs from `treesitter.select('parent')`
+wherever syntax and semantics diverge, macros and templates most visibly.
+
+### 11.10 Recency needs no parser and no server
+
+The neighbouring-tabs heuristic is the cheapest high-value signal in a
+completion prompt, and it is three vimscript calls:
+
+- `getbufinfo({buflisted = 1})` returns `lastused` per buffer, confirmed
+  present alongside `changedtick`, `changed` and `lnum`. Sort by it.
+- `getjumplist()` and `getchangelist()` give where the user has been and what
+  they edited, both as position lists.
+- gitsigns hunks, already on this rtp, give the uncommitted diff, which is the
+  best available proxy for "what this change is about".
+
+### 11.11 `vim.lsp.inline_completion` already does this end to end
+
+`lsp/inline_completion.lua` is 15 KB of core shipping the LSP 3.18
+`textDocument/inlineCompletion` feature, presented as overlay text, and its
+module docs at `:9` walk through a Copilot quickstart. If the local model can be
+fronted by a small language server, the buffer sync, the overlay rendering, the
+staleness handling and the cancellation are all already written, and hive's job
+shrinks to the transport it already has.
+
+Check that before building any of §11.2–§11.10. It is the difference between
+writing a context builder and writing a language server, and the second one
+lets core do the parts §1 and §10 say are easy to get wrong.
+
+### 11.12 Steal, do not depend
+
+Three plugins solve pieces of this and are not installed here, so they are named
+rather than cited:
+
+- **nvim-treesitter-context** computes the exact chain a FIM prefix wants, class
+  then method then loop header, each collapsed to its first line.
+- **aerial.nvim** normalises an LSP outline and a treesitter outline behind one
+  shape, which is §11.3's disagreement solved in practice.
+- **nvim-treesitter-textobjects** is the only supply of `textobjects.scm`, per
+  §11.6.
+
+### 11.13 Build order for hive
+
+1. **Buffer to bytes first** (§10 gap 4). Every item below slices a buffer, and
+   there is still no correct extraction function in `lua/hive/`.
+2. **Enclosing node plus attached doc comments**, using `prev_named_sibling`
+   with the blank-line guard from §11.3 and `get_node_text` for extraction.
+   Special-case Python. This is the whole of the local context and it needs no
+   query and no server.
+3. **Signatures of the siblings**, via `field('body')` slices of the enclosing
+   scope's other children. Still no query, still sync.
+4. **Recency**, per §11.10. Three function calls for the signal that Copilot
+   rates highest.
+5. **`folds.scm` chunking** where step 2 has no parser-specific answer, read
+   through `vim.treesitter.query.get`.
+6. **Free identifiers** from `locals.scm`, with the field filter, as the trigger
+   for retrieval rather than as context itself.
+7. **LSP, cached per `changedtick`**, and never on the keystroke path:
+   `documentSymbol` first, `hover` on free identifiers second, call hierarchy
+   only if the prompt budget is still unspent.
+
+---
+
 ## If you read only one thing
 
 `~/.local/share/nvim/lazy/conform.nvim/lua/conform/runner.lua` — 740 lines that
@@ -1324,5 +1666,36 @@ rather than tests:
   ```
   Then repeat with `stdin = vim.api.nvim_buf_get_lines(0,0,-1,true)` to watch it
   return `false` on a `noeol` buffer.
+- For §11, with the cursor inside a doc-commented function, in a Lua buffer:
+  ```lua
+  :lua local n = (vim.treesitter.get_parser(0):parse() and vim.treesitter.get_node())
+       while n and n:type() ~= 'function_declaration' do n = n:parent() end
+       local prev = n and n:prev_named_sibling()
+       print(n:start(), prev and prev:type(), prev and prev:start())
+  ```
+  On `lua/hive/curl.lua:131` that prints `118  comment  117`. A `comment`
+  immediately above the declaration is §11.3: text a cut of the node range
+  silently drops. Row 117 is the last of nine, so the block start still needs the
+  loop in §11.3.
+  Move the cursor to `:125` and swap the condition for
+  `n:type():find('function')` to reproduce the lambda trap in §11.2 instead.
+- Signature slice, same node:
+  ```lua
+  :lua local body = n:field('body')[1]
+       print(vim.inspect(vim.api.nvim_buf_get_lines(0, n:start(), body:start(), false)))
+  ```
+  Gives `{ "function M.request(req, callback)" }`.
+- Query supply on the rtp, which decides §11.6 and §11.7:
+  ```lua
+  :lua for _, q in ipairs({'folds','locals','textobjects'}) do
+         print(q, vim.treesitter.query.get(vim.bo.filetype, q) ~= nil) end
+  ```
+  `textobjects` returning `false` is the finding, not a broken install.
+- Cursor language in a markdown code block, per §11.4:
+  ```lua
+  :lua local r = vim.fn.line('.') - 1
+       local p = vim.treesitter.get_parser(0); p:parse(true)
+       print(p:language_for_range({r,0,r,0}):lang())
+  ```
 - In `hive.nvim`: `make test` and `:checkhealth hive` are unaffected — nothing
   here modifies the plugin.

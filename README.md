@@ -17,16 +17,26 @@
 
 ______________________________________________________________________
 
-## 💡 Motivation
+## 💡 Mission statement
 
-hive.nvim talks to a local, OpenAI-compatible HTTP server and hands the result back to Lua. It shells out to `curl` through `vim.system()` — no Lua HTTP library, no plugin dependencies, nothing to vendor.
+Hive implements a few core ideas:
+- Separate suggestions from the code to reduce visual clutter in the IDE, but provide efficient tools for accepting suggestions, even partial suggestions.
+- Control a task-oriented array of smaller agentic models and access patterns to them, hence the hive name, each insect does a single, specialised job, in parallel to others.
+- Improve control and generation accuracy by allowing the user to fine tune the context sent to the models, while using enough generated context to give the model a good chance to produce the specific output the user wants (emphasising shape from automatically sourced code, direction from user input).
+- Use local resources efficiently by giving the developer the tools and knowledge to produce good llm outputs, deferring to cloud solutions only when the task is appropriately large or general.
 
-The scope is deliberately narrow right now:
+The aim of these core ideas is to provide a user with more control over code style than pure vibe coding. Allowing the user to inject their real world context into the code shape itself, providing effective abstractions instead of the common brute force and re-implementation methods typified by generated code. 
+
+### Current scope:
+
+#### In Scope
 
 - One endpoint: `POST /v1/completions`
 - Hard-coded headers and configuration — no API key, no auth
 - A Lua API that takes a prompt and a token budget, and nothing else
 - Async by default, blocking when you want it
+
+#### Not implemented
 
 Rendering completions into scratch buffers, virtual text and floating windows is **not implemented yet** — the transport and API layers come first.
 
