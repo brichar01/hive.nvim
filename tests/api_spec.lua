@@ -70,6 +70,37 @@ describe("parse_completion", function()
     local err = Api.parse_completion(response(200, { choices = {} }))
     assert.are.equal("response contained no completion choices", err)
   end)
+
+  -- HTTP 200 with a plausible token count and nothing to show. Accepting this
+  -- as success presents as "hive does nothing", with no error to search for.
+  it("rejects an empty completion", function()
+    local err, out = Api.parse_completion(response(200, {
+      choices = { { text = "", finish_reason = "length" } },
+    }))
+
+    assert.is_nil(out)
+    assert.are.equal("model returned an empty completion", err)
+  end)
+
+  it("explains an empty completion that burned tokens", function()
+    local err, out = Api.parse_completion(response(200, {
+      choices = { { text = "", finish_reason = "length" } },
+      usage = { completion_tokens = 120 },
+    }))
+
+    assert.is_nil(out)
+    assert.is_truthy(err:find("120 tokens", 1, true))
+    assert.is_truthy(err:find("thinking model", 1, true))
+  end)
+
+  it("still accepts whitespace, which is a real completion", function()
+    local err, out = Api.parse_completion(response(200, {
+      choices = { { text = "    ", finish_reason = "stop" } },
+    }))
+
+    assert.is_nil(err)
+    assert.are.equal("    ", out.text)
+  end)
 end)
 
 describe("completions argument validation", function()
@@ -107,7 +138,12 @@ end)
 
 describe("completions against a live server", function()
   local Curl = require("hive.curl")
-  local reachable = select(1, Curl.request({ url = Config.base_url .. "/v1/models", timeout = 1000 })) == nil
+  -- Bounded at both ends: a base_url pointing at a host that drops packets
+  -- must not hold the suite for the full request timeout either.
+  local reachable = select(
+    1,
+    Curl.request({ url = Config.base_url .. "/v1/models", timeout = 1000, connect_timeout = 500 })
+  ) == nil
 
   it("returns generated text", function()
     if not reachable then

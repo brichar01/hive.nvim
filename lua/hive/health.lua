@@ -9,13 +9,75 @@ local function check_config()
     vim.validate("base_url", Config.base_url, "string")
     vim.validate("model", Config.model, "string")
     vim.validate("timeout", Config.timeout, "number")
+    vim.validate("connect_timeout", Config.connect_timeout, "number")
     vim.validate("headers", Config.headers, "table")
+    vim.validate("tls", Config.tls, "table")
   end)
 
   if not ok then
     vim.health.error("Invalid options: " .. tostring(err))
+    return
+  end
+
+  vim.health.ok(
+    ("options are valid (base_url = %s, model = %s, timeout = %dms, connect_timeout = %dms)"):format(
+      Config.base_url,
+      Config.model,
+      Config.timeout,
+      Config.connect_timeout
+    )
+  )
+end
+
+---Report how the server is addressed and what protects the connection
+local function check_endpoint()
+  local Config = require("hive.config")
+  local Curl = require("hive.curl")
+
+  local scheme, host = Config.base_url:match("^(%a[%w+.-]*)://([^/:]+)")
+  if not scheme then
+    vim.health.error(("base_url is not a URL: %s"):format(Config.base_url))
+    return
+  end
+
+  local loopback = host == "localhost" or host == "127.0.0.1" or host == "::1"
+  local token, source = Config.resolve_api_key()
+
+  if loopback then
+    vim.health.ok(("server is on this machine (%s)"):format(host))
+  elseif scheme == "https" then
+    if Config.tls.insecure then
+      vim.health.warn(
+        ("%s is remote and TLS verification is off"):format(host),
+        "tls.insecure means the connection is encrypted but unauthenticated. Set tls.cacert to the server's CA instead."
+      )
+    else
+      vim.health.ok(("server is remote (%s) over verified TLS"):format(host))
+    end
   else
-    vim.health.ok(("options are valid (base_url = %s, model = %s)"):format(Config.base_url, Config.model))
+    vim.health.warn(
+      ("%s is remote and the connection is plaintext"):format(host),
+      "Prompts carry your source code. Use https:// with tls.cacert, or keep the server on a trusted segment."
+    )
+  end
+
+  if not token then
+    vim.health.info("no API key configured — requests are unauthenticated")
+    return
+  end
+
+  local origin = source == "env" and ("$" .. Config.api_key_env) or "the api_key option"
+  if Curl.supports_expand() then
+    vim.health.ok(("API key from %s, passed to curl out of band"):format(origin))
+  else
+    local v = Curl.version()
+    vim.health.warn(
+      ("API key from %s is placed on curl's command line (curl %s has no --expand-header)"):format(
+        origin,
+        v and table.concat(v, ".") or "unknown"
+      ),
+      "Any local process can read it from /proc while a request is in flight. Upgrade to curl 8.3.0 or newer."
+    )
   end
 end
 
@@ -33,22 +95,40 @@ local function check_curl()
   return true
 end
 
----Check that the configured server answers
+---Check that the configured server answers, and that it serves the configured model
 local function check_server()
   local Config = require("hive.config")
-  local Curl = require("hive.curl")
+  local Api = require("hive.api")
 
-  local err, res = Curl.request({ url = Config.base_url .. "/v1/models", timeout = 2000 })
+  local err, models = Api.models(5000)
   if err then
     vim.health.warn(
       ("server at %s is not reachable: %s"):format(Config.base_url, err),
       "Start the OpenAI-compatible server, or point base_url at a running one."
     )
-  elseif res and res.status >= 500 then
-    vim.health.warn(("server at %s responded with HTTP %d"):format(Config.base_url, res.status))
-  else
-    vim.health.ok(("server at %s is reachable (HTTP %d)"):format(Config.base_url, res and res.status or 0))
+    return
   end
+  ---@cast models string[]
+
+  vim.health.ok(("server at %s is reachable"):format(Config.base_url))
+
+  if #models == 0 then
+    vim.health.info("server advertises no models on /v1/models — cannot verify `model`")
+    return
+  end
+
+  if vim.tbl_contains(models, Config.model) then
+    vim.health.ok(("server serves the configured model (%s)"):format(Config.model))
+    return
+  end
+
+  -- The default `model` is a placeholder, and every server names its models
+  -- differently. Moving the server is exactly when this drifts, and the
+  -- symptom without this check is an HTTP 400 at request time.
+  vim.health.error(
+    ("server does not serve the configured model (%s)"):format(Config.model),
+    ("Available: %s"):format(table.concat(models, ", "))
+  )
 end
 
 ---Health check called by `:checkhealth hive`
@@ -64,6 +144,7 @@ function M.check()
 
   check_config()
   if check_curl() then
+    check_endpoint()
     check_server()
   end
 end

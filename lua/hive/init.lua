@@ -23,6 +23,7 @@ end
 ---@param callback? fun(err: string|nil, completion: Hive.Completion|nil)
 ---@return string|nil err set only in blocking mode
 ---@return Hive.Completion|nil completion set only in blocking mode
+---@return vim.SystemObj|nil obj cancellation handle, set only in async mode
 function M.completions(prompt, max_tokens, callback)
   return require("hive.api").completions(prompt, max_tokens, callback)
 end
