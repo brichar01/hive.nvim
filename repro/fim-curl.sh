@@ -7,7 +7,9 @@
 #
 # The /infill endpoint wants the prefix and suffix separately and assembles the
 # model's FIM tokens itself, so it only works on a server started with a model
-# that advertises them (qwen2.5-coder, codellama, deepseek-coder, ...).
+# that advertises them (qwen2.5-coder, codellama, deepseek-coder, ...). It also
+# stops cleanly at EOS. The `raw` mode is a fallback for servers without
+# /infill and will typically overrun the suffix -- trim its output yourself.
 
 set -euo pipefail
 
@@ -47,7 +49,11 @@ raw)
        prompt: ("<|fim_prefix|>" + $prefix + "<|fim_suffix|>" + $suffix + "<|fim_middle|>"),
        n_predict: 64,
        temperature: 0.1,
-       stream: false
+       stream: false,
+       # Best-effort only. /completion has no infill-aware stopping; these
+       # catch models that emit FIM sentinels, but qwen2.5-coder just writes
+       # plain code past the suffix and runs to n_predict. Prefer /infill.
+       stop: ["<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>", "<|endoftext|>", "<|file_sep|>"]
      }' |
     curl -sS --fail-with-body -m 60 \
       -H 'Content-Type: application/json' \
