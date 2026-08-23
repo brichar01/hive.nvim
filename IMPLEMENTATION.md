@@ -123,7 +123,20 @@ local defaults = {
   -- slower, which is not usable. On a dedicated GPU, prefer 7b (§8.3.4).
   model = "qwen2.5-coder:3b",
   timeout = 60000,
+  -- Bounds the connect phase alone. Only matters off-box: loopback refuses a
+  -- dead port instantly, a remote host that DROPs packets stalls for the whole
+  -- `timeout`. §9.6.
+  connect_timeout = 3000,
   headers = { ["Content-Type"] = "application/json", ["Accept"] = "application/json" },
+
+  -- credentials and TLS — inert for a loopback server, required off-box (§9.6)
+  ---@type string|fun(): string|nil
+  api_key = nil,               -- a literal here lives in your dotfiles
+  api_key_env = "HIVE_API_KEY",-- read when `api_key` is unset
+  tls = {
+    cacert = nil,              -- CA bundle for a privately-signed server
+    insecure = false,          -- makes TLS decorative; prefer `cacert`
+  },
 
   -- "auto" probes once per session and caches; see §9.1
   transport = "auto",            -- "auto" | "openai" | "ollama_raw"
@@ -228,6 +241,11 @@ Validation (extend the existing `pcall` block; `vim.validate` per leaf):
 | `base_url` | string, non-empty, trailing `/` stripped (already done) |
 | `model` | string, non-empty |
 | `timeout` | number, ≥ 1000 |
+| `connect_timeout` | number, 100 ≤ x ≤ `timeout` — a connect budget larger than the request budget can never be reached, so it is always a mistake |
+| `api_key` | string or `fun(): string|nil`, optional; empty string treated as unset |
+| `api_key_env` | string, non-empty |
+| `tls.cacert` | string, optional, and **`filereadable()`** — a mistyped path must fail at `setup()`, not as curl exit 77 per request |
+| `tls.insecure` | boolean; warn when set together with `tls.cacert`, since the skip wins |
 | `transport` | one of `auto`/`openai`/`ollama_raw` |
 | `fim.dialect` | one of the known keys, or a table with all five keys of §8.1 |
 | `fim.max_tokens` | integer ≥ 1, **and < `budget.total_tokens`** — §8.3 spends `total_tokens - max_tokens` on the prompt, so an equal or larger value leaves no prompt at all |
@@ -1589,6 +1607,94 @@ verified here:
 - Render partial output as **virtual text only**, writing real text on completion
   [R§9.6]. That sidesteps the staleness problem entirely.
 
+### 9.6 When the server is not on this machine
+
+§8.3.4's GPU tier is reached in practice by pointing `base_url` at another
+machine, not by buying a GPU for this one. That is a supported move — `base_url`
+is already the only coupling point, and `openai` is already the correct profile
+for `llama-server`, vLLM and LM Studio (§9.1) — but three assumptions in the
+transport are **loopback assumptions**, and each fails quietly rather than
+loudly once there is a network in between.
+
+**1. A dead remote host stalls for the whole `timeout`, not instantly.**
+Measured 2026-08-23, curl 8.21.0:
+
+| target | outcome | elapsed |
+| --- | --- | --- |
+| `127.0.0.1:9`, nothing listening | exit 7, connection refused | **0 s** |
+| `192.0.2.77:8080` (TEST-NET-1, blackholed), `--max-time 3` | exit 28 | **3 s — the full budget** |
+| same, `--connect-timeout 1 --max-time 3` | exit 28 | **1 s** |
+
+Loopback cannot produce the middle row: nothing listening means an immediate
+ECONNREFUSED. A remote host that is asleep, or behind a firewall that DROPs
+rather than REJECTs, produces exactly it — so the 60 s `timeout` becomes a 60 s
+freeze on the blocking path, and `:checkhealth` a 2 s one. **`connect_timeout`
+is not a tuning knob; it is what makes a wrong `base_url` diagnosable.**
+
+**2. Credentials on the argv are world-readable.** Headers are built onto the
+command line (`curl.lua` `build_args`), so a bearer token added through the
+existing `headers` option is visible in `/proc/<pid>/cmdline` to every process on
+the box for the life of the request. The fix that does **not** reintroduce the
+temp-file problems §9.2 rejects is curl's own indirection:
+
+```
+--variable %HIVE_TOKEN --expand-header 'Authorization: Bearer {{HIVE_TOKEN}}'
+```
+
+with the value placed in curl's environment by `vim.system`'s `env` (which
+extends the parent environment rather than replacing it). The token then exists
+only in Neovim's memory and curl's environment — never in an argv, never on
+disk. Verified present on curl 8.21.0 here; the pair landed in **curl 8.3.0**, so
+it is version-gated, with a plain `--header` fallback and a `:checkhealth` warning
+that says why. Note `--location` is already safe with credentials: curl does not
+forward `--header` auth across a host change without `--location-trusted`.
+
+**3. TLS has no configuration surface.** `https://` works today with no code
+change *only* if the server's certificate is already trusted, which a LAN box
+rarely is; hence `tls.cacert`. `tls.insecure` exists because people will
+otherwise reach for `http://`, but it makes the channel encrypted and
+unauthenticated, which is worse than plaintext for being harder to notice.
+`CURL_ERRORS` also gains 35/60/77 (and 5, 47) — without them a certificate
+failure reads as `curl exited with code 60`.
+
+**Weigh TLS against the process-per-request design.** Each request is a fresh
+curl, so no connection is reused and every request pays a full handshake. Over
+plain HTTP on a LAN that is one sub-millisecond RTT; over TLS it is two RTTs plus
+handshake crypto **on every completion**. On a trusted segment, plain HTTP is the
+defensible choice and the warning in §13 check 2b says so rather than insisting.
+
+#### What this changes elsewhere in the plan
+
+- **§13 check 8 does not work off-box.** `GET /api/ps` is an ollama endpoint. A
+  remote `llama-server` or vLLM has no equivalent, so `budget.total_tokens`
+  cannot be checked against the server's real window — and §8.3.7's silent
+  head-truncation is *still* the failure mode, now undetectable. On the `openai`
+  profile against a non-ollama server the ceiling has to be asserted by the
+  operator (`llama-server --ctx-size`, vLLM `--max-model-len`) and recorded in
+  config, not discovered. **This is an open gap, not a solved one.**
+- **§13 gains a model check.** Every server names its models differently and
+  `model` defaults to the placeholder `"default"`, so moving the server is
+  exactly when it drifts. `GET /v1/models` already returns the list; comparing
+  `Config.model` against it turns an HTTP 400 at submit time into a
+  `:checkhealth` error naming what *is* served. Cheapest high-value check here.
+- **§8.3's numbers must be re-measured on the remote machine**, per §8.3.4 —
+  they are properties of the inference host, not of hive.
+- **`transport` should be set explicitly to `"openai"`** for a non-ollama remote
+  rather than left on `"auto"`. The probe would fall back correctly (`/api/version`
+  404s), but it costs a round trip on first use, and §9.1 does not say the cached
+  result is keyed by `base_url` — so changing servers mid-session keeps a stale
+  transport. Key the cache by `base_url`.
+- **The `ollama_raw` rationale weakens off-box.** §9.1's two defects — `prompt`
+  being chat-templated, and a thinking model's tokens vanishing — are *ollama
+  compatibility-layer* defects. `llama-server`, vLLM and LM Studio do not
+  template `prompt`, so a remote one makes §8.2's hand-assembled FIM prompts work
+  on `/v1/completions` directly. Keep §9.4's empty-text check regardless: it
+  costs nothing and it is the one error message that explains itself.
+- **`base_url`'s default stays `http://localhost:8080` for now.** §2's block
+  proposes `http://localhost:11434`, but adopting that ahead of §9.1's two-profile
+  work would point the shipped default at ollama's `/v1/completions` — the exact
+  path §9.1 measured as broken. The two land together in build-order step 2.
+
 ---
 
 ## 10. Applying the output
@@ -1832,6 +1938,17 @@ Extend `lua/hive/health.lua`. Each is a distinct `health.ok`/`warn`/`error`:
 1. `curl` executable — existing.
 2. `base_url` reachable — existing, but switch to the probe of §9.1 so it also
    reports the detected transport.
+2b. **How the server is addressed.** Whether `base_url` is loopback or remote;
+   for a remote one, whether the connection is plaintext or verified TLS, and
+   whether a credential is configured and reachable without the argv (§9.6).
+   Plaintext to a remote host is a `warn`, not an `error` — on a trusted segment
+   it is the right call given the per-request handshake cost, and the check says
+   what is at stake rather than insisting.
+2c. **The configured model is actually served.** Compare `Config.model` against
+   the ids in `GET /v1/models` and `health.error` with the available list when it
+   is absent. `model` defaults to a placeholder and every server names its models
+   differently, so this drifts precisely when the server moves (§9.6). Without it
+   the symptom is an HTTP 400 at submit time.
 3. **Thinking-model trap.** Send a 16-token completion through the configured
    transport. If `text == ""` and the token count is non-zero, `health.error`
    with the §9.4 hint. This is the check that turns a mystifying silence into a
@@ -1866,7 +1983,11 @@ Extend `lua/hive/health.lua`. Each is a distinct `health.ok`/`warn`/`error`:
    `OLLAMA_CONTEXT_LENGTH` on `openai`. Do **not** read `/api/show` for this — it
    reports the architectural maximum, not the loaded window. Report the two side
    by side, since the gap between them (8192 loaded vs 32768 architectural here)
-   is the thing users misread.
+   is the thing users misread. **`/api/ps` is ollama-only**: against a remote
+   `llama-server` or vLLM this check cannot run, and §8.3.7's silent
+   head-truncation becomes undetectable. Report it as `info` naming the
+   server-side flag (`--ctx-size`, `--max-model-len`) rather than silently
+   skipping — see §9.6's open gap.
 9. **Prefill cost.** Report the measured prefill rate from the last submit
    (`prompt_eval_count / prompt_eval_duration`) alongside `budget.total_tokens`,
    as `~896 prompt tokens ≈ 12 s at 75 tok/s`. On the §8.3.1 CPU baseline this is
@@ -1891,7 +2012,8 @@ nothing answers, and that pattern extends.
 | `tests/discover_spec.lua` | §7 | Synthetic `documentSymbol` payloads, including the noisy lua_ls shape from §7.1, asserting the filter drops `Package`/`String` and body-less `Variable`s while keeping a callable `Variable` (tsgo's arrow-const, §7.1). No live LSP. |
 | `tests/prompt_spec.lua` | §8 | Dialect rendering byte-for-byte; budget trimming order; assert the hole is never trimmed. Assert `reserve` sums to 1.0 and that `code.whole_file.max_bytes`, the 28+12 slice and the 20-line import block all fit inside `reserve.code` at the default budget (§8.3.3) — these are the couplings that silently rot when one default is tuned alone. Assert R1/R2 rendering is byte-identical across two submits with unchanged inputs, since §8.3.1's 6x prefix-cache win depends on it. |
 | `tests/apply_spec.lua` | §10 | Provenance gravity at both boundaries; `overlap = true`; `invalidate` on deletion and restoration on undo; **one undo per accept**; reverse-sorted hunk application. |
-| `tests/api_spec.lua` (edit) | §9.4 | Add: empty `text` with non-zero `completion_tokens` returns an error, not success. |
+| `tests/api_spec.lua` (edit) | §9.4 | Add: empty `text` with non-zero `completion_tokens` returns an error, not success. Whitespace-only text is still a success — the check is `== ""`, not `vim.trim(...) == ""`. |
+| `tests/remote_spec.lua` | §9.6 | `connect_timeout` reaches the argv as seconds and is absent when unset; a blackholed host (TEST-NET `203.0.113.1`) returns well inside `timeout`; `cacert`/`insecure` reach curl; an unreadable `cacert` is rejected at `setup()`; the token resolves config-over-env, accepts a function, and — where curl supports `--expand-header` — **appears nowhere in `build_args`' output**, which is the assertion the whole indirection exists for. |
 
 Child-process isolation matters here: several of these assert on `undolevels`
 manipulation and buffer-local state, which leaks between tests otherwise.
@@ -1904,7 +2026,7 @@ Each step is independently testable and leaves the plugin working.
 
 | # | Step | Done when |
 | --- | --- | --- |
-| 1 | §9.3 transport fixes + §9.4 empty-text validation | `api_spec` covers empty text; a bad `base_url` errors instead of throwing |
+| 1 | §9.3 transport fixes + §9.4 empty-text validation + §9.6 remote options | `api_spec` covers empty text; a bad `base_url` errors instead of throwing; `remote_spec` passes; `:checkhealth` names the served models — **done** |
 | 2 | §9.1 two profiles + `auto` probe; `M.infill` | `:Hive complete` still works; a FIM request round-trips against the local server |
 | 3 | §3 session buffer + §4 region model + §4.4 repair | `:Hive open` creates the scaffold; `region_spec`'s six cases pass |
 | 4 | §5 target tracking | `:Hive target` and the `WinLeave` capture both set a correct target |

@@ -32,9 +32,11 @@ The aim of these core ideas is to provide a user with more control over code sty
 #### In Scope
 
 - One endpoint: `POST /v1/completions`
-- Hard-coded headers and configuration — no API key, no auth
 - A Lua API that takes a prompt and a token budget, and nothing else
 - Async by default, blocking when you want it
+- The server may be on this machine or elsewhere on your network — optional
+  bearer auth and TLS, with a connect deadline so a host that is down fails
+  fast instead of hanging the editor
 
 #### Not implemented
 
@@ -93,13 +95,45 @@ From the command line:
 require("hive").setup({
   base_url = "http://localhost:8080",
   model = "default",
-  timeout = 60000, -- ms
+  timeout = 60000,        -- ms, whole request
+  connect_timeout = 3000, -- ms, connect phase only
   headers = {
     ["Content-Type"] = "application/json",
     ["Accept"] = "application/json",
   },
 })
 ```
+
+#### Pointing it at another machine
+
+`base_url` is the only thing that has to change. `model` almost certainly does
+too — every server names its models differently, and `:checkhealth hive` will
+tell you which ones yours actually serves:
+
+```lua
+require("hive").setup({
+  base_url = "http://gpubox.lan:8080",
+  model = "qwen2.5-coder:7b",
+
+  -- Optional. Leave api_key unset and export HIVE_API_KEY instead: on
+  -- curl >= 8.3 the token is passed out of band, so it never appears in the
+  -- process list where any local process could read it.
+  api_key_env = "HIVE_API_KEY",
+
+  -- Optional, for an https:// base_url with a private CA.
+  tls = { cacert = "/etc/ssl/certs/lan-ca.pem" },
+})
+```
+
+Two things worth knowing before you do:
+
+- **Plain HTTP sends your source code across the network in the clear.** That is
+  fine on a segment you trust and not otherwise. TLS costs a full handshake per
+  request, because each request is its own `curl` process.
+- **`connect_timeout` is what keeps a sleeping server from freezing Neovim.** A
+  host that drops packets rather than refusing the connection would otherwise
+  stall for the whole `timeout`. Nothing listening on `localhost` fails
+  instantly, which is why this only matters once the server is elsewhere.
 
 Full documentation lives in [`:help hive`](https://github.com/brichar01/hive.nvim/blob/main/doc/hive.txt).
 
