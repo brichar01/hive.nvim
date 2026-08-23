@@ -438,9 +438,40 @@ per symbol instead of one per file, which is why `IMPLEMENTATION.md` §7.1 uses
 the signature from either a treesitter slice (same file, free) or `hover`
 (cross-file, capped and cached per `changedtick`).
 
-Call hierarchy is the strongest cross-file signal and the most expensive: two
-requests, and the results are positions that then have to be read. Cache per
-`changedtick`, and never on a keystroke path.
+**Call hierarchy is not the way to get the strongest cross-file signal.** The
+original survey listed `callHierarchy/incomingCalls` as "the strongest cross-file
+signal and the most expensive: two requests" and left it there. Measured
+2026-08-23 by `scripts/measure/consumers.lua`, against the same four servers, it
+is worse than that on two counts and unnecessary on a third:
+
+| Server | `callHierarchyProvider` | prepare + incomingCalls | `CallHierarchyItem.range` for the caller | `references` |
+| --- | --- | --- | --- | --- |
+| `lua_ls` 3.18.2-dev | **absent** | **`-32601` method not found** | — | 205 ms |
+| `pyright` 1.1.411 | `true` | 6 + 1 ms | name only (`== selectionRange`) | 18 ms |
+| `tsgo` 7.0.0-dev | `true` | 1 + 1 ms | **full body** | 1 ms |
+| `clangd` 22.1.6 | `true` | 1 + 1 ms | name only (`== selectionRange`) | 1 ms |
+
+1. **`lua_ls` does not implement it.** The language the plugin is written in is
+   the one server of the four that answers `-32601` — the same shape as §11.6.1's
+   query supply.
+2. **`CallHierarchyItem.range` is not portable.** The spec calls it "the range
+   enclosing this symbol", which reads as the caller's whole body; tsgo returns
+   that, pyright and clangd return the caller's name identifier only, byte
+   identical to `selectionRange`. So it cannot be used to slice the caller — the
+   same optional-shaped-field trap as `DocumentSymbol.detail` above.
+3. **`fromRanges` is the only consistent part, and `references` already gives
+   it.** The call-site positions are what a consumer snippet is built from, and
+   `textDocument/references` returns exactly those in **one** round trip on all
+   four servers. `IMPLEMENTATION.md` §7.4 takes that path; `incomingCalls`
+   survives only as an optional upgrade, for the caller *name* and for dropping
+   non-call references (pyright's `references` includes the `import` line).
+
+Either way the results are positions that then have to be read, so both share the
+same rule: cache per `changedtick`, and never on a keystroke path. One further
+measured property, which §7.4 depends on: **both requests see callers that exist
+only in a modified, unwritten buffer**, provided that buffer is open and attached
+to the same client — reference counts moved 2 → 3 on lua_ls, 1 → 2 on tsgo,
+3 → 5 on pyright and 2 → 4 on clangd with the file on disk untouched.
 
 *Retired:* `textDocument/selectionRange` as a semantic widen. §11.2's treesitter
 walk covers the workbench's needs synchronously.

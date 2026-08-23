@@ -109,6 +109,22 @@ local defaults = {
       "Variable", "Constant",
     },
     max_depth = 1,               -- documentSymbol nesting depth to descend
+
+    -- What *calls* the target — §7.4. Sourced from `textDocument/references`,
+    -- not call hierarchy: lua_ls answers `-32601` for `prepareCallHierarchy`
+    -- and `CallHierarchyItem.range` disagrees across the other three.
+    -- Only applies when §6.3 found a unit (strategy `unit`).
+    consumers = {
+      enabled = true,
+      -- call sites, not callers. A widened site is 1-3 lines ~= 10-30 tokens,
+      -- so 3 is 11-33% of reserve.context (269) at the default budget; it is
+      -- taken from ranked stubs, which is why it is not folded into
+      -- max_symbols. Raise with max_symbols on a GPU (§8.3.4).
+      max = 3,
+      -- widen cap for the bracket-balance fallback, used only when no
+      -- treesitter parser exists for the *caller's* filetype
+      max_lines = 3,
+    },
   },
 
   -- triggers -------------------------------------------------------------

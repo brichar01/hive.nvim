@@ -85,7 +85,12 @@ of the options in [R§11.9], because `DocumentSymbol.detail` is a rendered
 signature — and the measurement here closes a real gap: against
 `lua-language-server` it works but is **far noisier** than the research implies.
 Then free identifiers and the vendored queries (the consequence of [R§11.6.1]),
-and the treesitter fallback path.
+and the treesitter fallback path. §7.4 adds the inverse signal — **what calls the
+target**, which for a FIM plugin fixes the arity and argument shapes the model
+would otherwise guess. It is sourced from `textDocument/references` rather than
+call hierarchy, because measurement found `lua_ls` does not implement
+`prepareCallHierarchy` at all and `CallHierarchyItem.range` means something
+different on each of the three servers that do.
 
 ### [6. Prompt assembly](notes/implementation/06-prompt-assembly.md) — §8
 

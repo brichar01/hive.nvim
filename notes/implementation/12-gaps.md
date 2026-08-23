@@ -53,6 +53,15 @@ Recorded because the review of `PLAN.md` turned on them.
     that follow from them are correct here and wrong on a GPU box; §8.3.4 gives
     the alternate tier and the procedure to re-derive it. This is the one section
     of this plan that is expected to be re-run rather than trusted.
+11. **Call hierarchy, and what a "consumer" costs.** [R§11.9] listed
+    `callHierarchy/incomingCalls` as the strongest cross-file signal and priced
+    it at two requests. Measured 2026-08-23, the price is not the problem:
+    `lua_ls` does not implement the method at all (`-32601`), and
+    `CallHierarchyItem.range` means the caller's whole body on tsgo and the
+    caller's bare name on pyright and clangd, so it cannot slice the caller
+    anywhere portably. §7.4 is the new section that follows —
+    `textDocument/references` instead, one request, all four servers — and it is
+    the first thing in R2 that has to read a file hive did not already have open.
 
 ### 16.2 What the research had that this plan must not lose
 
@@ -68,6 +77,11 @@ each is cited at its point of use above rather than left in a general appendix:
   reasons. (§7.2)
 - `(identifier) @local.reference` matches field names; 7 of 8 free references in
   `M.request` are fields of `vim`. (§7.2)
+- `lua_ls` answers `-32601` to `prepareCallHierarchy`, and `from.range` is the
+  caller's whole body on one server and its bare name on two others. (§7.4)
+- Both `references` and `incomingCalls` see a caller that exists only in a
+  modified, unwritten buffer — but only if that buffer is open and attached to
+  the same client. (§7.4)
 - Default extmark gravity is correct for provenance and the intuitive choice is
   not. (§10.1)
 - `overlap = true` or provenance queries fail everywhere except the first byte.

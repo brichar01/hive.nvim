@@ -52,6 +52,12 @@ Extend `lua/hive/health.lua`. Each is a distinct `health.ok`/`warn`/`error`:
    the user reading any source.
 7. **LSP.** Whether any attached client supports `documentSymbol`, and its
    `offset_encoding`.
+7b. **Consumers (§7.4).** Whether an attached client supports
+   `textDocument/references`, and separately whether it advertises
+   `callHierarchyProvider`. Absent `references` is a `warn` — R2 loses consumers
+   and keeps its stubs. Absent call hierarchy is `info`, not a warning: it is the
+   measured state on `lua_ls`, hive does not use it, and reporting it as a
+   problem would send users hunting for a server that fixes nothing.
 8. **Effective context window.** `GET /api/ps` for the loaded model and compare
    its `context_length` against `budget.total_tokens` (§8.3.7). `health.error` if
    the budget exceeds it, naming `num_ctx` on `ollama_raw` and
@@ -85,6 +91,7 @@ nothing answers, and that pattern extends.
 | `tests/whole_spec.lua` | §6.2 | The ladder. A 59-line file ⇒ `whole`; a 61-line file ⇒ `unit`; a 10-line file of 500-char lines ⇒ **not** `whole`, because `max_bytes` binds; a file with no parser and 30 lines ⇒ `whole`; a file with no parser and 300 lines ⇒ `lines`. Also asserts `whole` never emits an import block or an elision marker. |
 | `tests/imports_spec.lua` | §6.8 | Strategy A per language; the `export_statement`-with-`source` discriminator (re-export in, `export function` out); `preproc_include`'s `end_col == 0` slice not swallowing the next line; strategy B's prologue boundary landing before an **empty-bodied** Lua function rather than after it; the elision marker suppressed when nothing is elided. |
 | `tests/discover_spec.lua` | §7 | Synthetic `documentSymbol` payloads, including the noisy lua_ls shape from §7.1, asserting the filter drops `Package`/`String` and body-less `Variable`s while keeping a callable `Variable` (tsgo's arrow-const, §7.1). No live LSP. |
+| `tests/consumers_spec.lua` | §7.4 | Synthetic `references` payloads, no live LSP — the four-server divergence is measured by `scripts/measure/consumers.lua`, not asserted here. Must cover: a result inside R3's own slice is dropped (the recursive-call case); an import line is dropped; a call whose arguments wrap is widened past its start line, both via a parser and via the bracket-balance fallback; a result in a **loaded, modified** buffer is read from the buffer and not from disk; and — the one that guards §8.3.1 — two runs over the same results shuffled render byte-identically, because §7.4 step 3 sorts by `(uri, line, character)`. Zero consumers renders as nothing, never as an error. |
 | `tests/prompt_spec.lua` | §8 | Dialect rendering byte-for-byte; budget trimming order; assert the hole is never trimmed. Assert `reserve` sums to 1.0 and that `code.whole_file.max_bytes`, the 28+12 slice and the 20-line import block all fit inside `reserve.code` at the default budget (§8.3.3) — these are the couplings that silently rot when one default is tuned alone. Assert R1/R2 rendering is byte-identical across two submits with unchanged inputs, since §8.3.1's 6x prefix-cache win depends on it. |
 | `tests/apply_spec.lua` | §10 | Provenance gravity at both boundaries; `overlap = true`; `invalidate` on deletion and restoration on undo; **one undo per accept**; reverse-sorted hunk application. |
 | `tests/api_spec.lua` (edit) | §9.4 | Add: empty `text` with non-zero `completion_tokens` returns an error, not success. Whitespace-only text is still a success — the check is `== ""`, not `vim.trim(...) == ""`. |

@@ -1,4 +1,4 @@
-.PHONY: test test-one lint format typecheck check dev clean
+.PHONY: test test-one lint format typecheck check dev clean measure-consumers
 
 test:
 	nvim -l tests/minit.lua --minitest $(FILE)
@@ -21,6 +21,12 @@ typecheck:
 		lua-language-server --check_format=pretty --check lua/ --configpath="$$(pwd)/.luarc.json" --checklevel=Warning
 
 check: lint typecheck test
+
+# Re-measures §7.4 / [R§11.9]: which servers can say what calls the target,
+# and by which request. Needs the language servers on PATH or in mason's bin;
+# skips the ones that are absent. See scripts/measure/consumers.lua.
+measure-consumers:
+	nvim -l scripts/measure/consumers.lua
 
 dev:
 	nvim -u repro/repro.lua

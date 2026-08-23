@@ -22,10 +22,11 @@ Each step is independently testable and leaves the plugin working.
 | 6 | §8 prompt assembly + budget | `:Hive submit` fills the hole; trimming is reported; `num_ctx` is sent on `ollama_raw` and the §8.3.7 ceiling is refused on `openai` |
 | 7 | §10.1–§10.3 provenance, accept, undo | `apply_spec` passes; five accepted words are five undos |
 | 8 | §7.2 vendored queries + §7.1 LSP R2 | R2 ranks by free identifiers; `:checkhealth hive` reports the query supply |
+| 8b | §7.4 consumers | `consumers_spec` passes; with a language server attached, editing an existing function shows its call sites in R2, and a freshly written one shows none without an error. Deliberately after 8: it shares §7.1's request plumbing, encoding conversion and timeout, and it is the first thing in R2 that reads a file hive did not already have. |
 | 9 | §10.4 transplant | A rewrite lands as minimal hunks; one undo reverts it |
 | 10 | §11 events + §12 commands + §13 health + `doc/hive.txt` | `make check` clean |
 
-Steps 1–7 — 5b and 5c included — are the working product. 8 improves R2's
+Steps 1–7 — 5b and 5c included — are the working product. 8 and 8b improve R2's
 quality, 9 closes the loop back to the source, 10 is polish. Each step's
 done-when implies its `:Hive` subcommand lands with that step; §12 in step 10 is
 the final shape of the dispatch table, not the first appearance of the commands.

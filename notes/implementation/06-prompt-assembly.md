@@ -64,6 +64,14 @@ Putting prose in a FIM prefix is unusual. It is the design intent — R1 is the
 motivation the model should condition on — and it is why the prompt is assembled
 by hand rather than delegated to a server-side `suffix` parameter (§9.2).
 
+**§7.4's consumers need no new layout.** A call site from another file genuinely
+*is* another file, so each one renders as its own `<|file_sep|>{caller relative
+path}` section inside the R2 body, in the sorted order §7.4 step 3 fixes. That is
+the convention already in use above, it tells the model which file the example
+comes from for free, and it keeps consumers inside `reserve.context` where §8.3.6
+trims them. For dialects with no `file_sep`, they fold into the prefix as
+comment blocks alongside the stubs, with the path as the comment's first line.
+
 ### 8.3 Budget
 
 Two different numbers are in play and conflating them is the failure mode this
@@ -245,8 +253,13 @@ Allocation, in order, against `budget.total_tokens` minus `fim.max_tokens`:
    reads a missing import as "that name is unavailable"; then, if the slice still
    exceeds the reserve, drop whole lines from the *far* end of the prefix and the
    far end of the suffix alternately, keeping the hole centred.
-3. R2 gets `reserve.context`; if over, drop the lowest-ranked stubs whole. Never
-   truncate a stub mid-line — a half signature is worse than no signature.
+3. R2 gets `reserve.context`. If over, trim in this order: the lowest-ranked
+   stubs down to half of `max_symbols`, then §7.4's consumers from the last, then
+   the remaining stubs. Consumers survive the first pass because a real call site
+   outweighs the twelfth-ranked signature, and not the last because a signature
+   the target *calls* still outweighs a second example of it being *called*.
+   Never truncate a stub or a consumer snippet mid-line — a half signature is
+   worse than no signature, and half a call site is worse than none.
 4. R1 gets `reserve.notes`; if over, drop from the *top*, keeping the most recent
    prose, and prepend `<!-- …trimmed… -->`.
 5. Any region under its reserve donates the remainder to the next in this order:
