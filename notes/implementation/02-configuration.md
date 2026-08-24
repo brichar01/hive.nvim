@@ -22,7 +22,9 @@ local defaults = {
   -- FIM-capable coder model is a hard requirement; `:checkhealth hive`
   -- (§13.4) is what tells the user their model cannot do FIM.
   -- 3b, not 7b: on the §8.3.1 CPU baseline a 7b model prefills ~2.5x
-  -- slower, which is not usable. On a dedicated GPU, prefer 7b (§8.3.4).
+  -- slower, which is not usable. Against §8.3.4's measured remote server the
+  -- 7b is comfortable: prefill 1412-1496 tok/s and decode 42.6-44.4 tok/s,
+  -- so prefer 7b there (§8.3.4).
   model = "qwen2.5-coder:3b",
   timeout = 60000,
   -- Bounds the connect phase alone. Only matters off-box: loopback refuses a
@@ -49,7 +51,10 @@ local defaults = {
     -- "starcoder2" | table
     dialect = "qwen",
     -- decode is 18.5 tok/s on the §8.3.1 baseline, so this is a ~7 s
-    -- worst case. Raise to 256 on a GPU (§8.3.4).
+    -- worst case. Measure decode before raising this on other hardware: it
+    -- does NOT scale with prefill. §8.3.4's server prefills ~20x faster than
+    -- the baseline but decodes only ~2.4x faster (43 tok/s), which is what
+    -- affords 256 there -- a 6.0 s completion, not a 3 s one.
     max_tokens = 128,
     -- extra stop strings appended to the dialect's own
     stop = {},
@@ -57,14 +62,17 @@ local defaults = {
 
   -- prompt budget --------------------------------------------------------
   -- Every value here is derived in §8.3 from the CPU baseline of §8.3.1.
-  -- On a dedicated GPU use the larger tier in §8.3.4 instead.
+  -- Against a remote GPU server use the measured tier in §8.3.4 instead:
+  -- total_tokens 3072, fim.max_tokens 256, bytes_per_token 4.07, reserve
+  -- unchanged.
   budget = {
     total_tokens = 1024,         -- ceiling for prompt + completion; §8.3.2
     bytes_per_token = 3.9,       -- measured on Lua source, see §8.3.1
+                                 -- 4.07 exactly via llama.cpp /tokenize; §8.3.5
     -- share of the remaining budget each region may claim; the spend/trim/
     -- donate order is §8.3.6's (code → context → notes), not this table's.
     -- Derived in §8.3.3 so that reserve.code fits §6.2's 60-line whole-file
-    -- case exactly; the same ratios hold at the §8.3.4 GPU budget.
+    -- case exactly; the same ratios hold at §8.3.4's measured remote budget.
     reserve = { notes = 0.15, context = 0.30, code = 0.55 },
   },
 
@@ -78,6 +86,7 @@ local defaults = {
       -- must not exceed reserve.code expressed in bytes, or the whole-file
       -- rung emits a payload the budget will immediately trim: §8.3.3
       max_bytes = 1920,          -- guards minified / very-long-line files
+                                 -- 6144 at the §8.3.4 remote tier
     },
 
     -- The import/include block, prepended to the slice when the whole file
@@ -85,6 +94,7 @@ local defaults = {
     imports = {
       enabled = true,
       max_lines = 20,            -- elided with a marker beyond this; §8.3.3
+                                 -- 40 at the §8.3.4 remote tier
     },
 
     unit = "function",           -- "function" | "lines"
@@ -99,7 +109,8 @@ local defaults = {
   context = {
     source = "lsp",              -- "lsp" | "treesitter" | "off"
     -- a filtered stub line costs ~15 tokens, and reserve.context is 269
-    -- tokens at the default budget: §8.3.3. Raise to 40 on a GPU (§8.3.4).
+    -- tokens at the default budget: §8.3.3. Raise to 40 at the §8.3.4 remote
+    -- tier, where reserve.context is 845 and 40 stubs cost 600.
     max_symbols = 16,
     lsp_timeout = 1500,          -- ms; a slow server must never block a refresh
     kinds = {                    -- SymbolKind names to keep; see §7.1
@@ -119,7 +130,7 @@ local defaults = {
       -- call sites, not callers. A widened site is 1-3 lines ~= 10-30 tokens,
       -- so 3 is 11-33% of reserve.context (269) at the default budget; it is
       -- taken from ranked stubs, which is why it is not folded into
-      -- max_symbols. Raise with max_symbols on a GPU (§8.3.4).
+      -- max_symbols. 6 at the §8.3.4 remote tier, with max_symbols at 40.
       max = 3,
       -- widen cap for the bracket-balance fallback, used only when no
       -- treesitter parser exists for the *caller's* filetype

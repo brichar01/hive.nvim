@@ -44,16 +44,78 @@ Recorded because the review of `PLAN.md` turned on them.
    the bytes above R3 changed. Nothing in the research or in the first draft of
    this plan treated R1/R2 stability as load-bearing, and nothing currently
    enforces it.
-9. **`num_ctx` is a second ceiling with no error path.** §8.3.7. The research
-   costed the prompt against hive's own budget and never against the server's
-   window; ollama's 4096 default truncates from the head, which removes the FIM
-   sentinel and returns HTTP 200.
-10. **The measurements are laptop-CPU measurements.** Every latency figure in
-    §8.3.1 comes from a machine with no discrete GPU (`size_vram=0`). The defaults
-    that follow from them are correct here and wrong on a GPU box; §8.3.4 gives
-    the alternate tier and the procedure to re-derive it. This is the one section
-    of this plan that is expected to be re-run rather than trusted.
-11. **Call hierarchy, and what a "consumer" costs.** [R§11.9] listed
+9. **`num_ctx` is a second ceiling with no error path — on ollama.** §8.3.7. The
+   research costed the prompt against hive's own budget and never against the
+   server's window; ollama's 4096 default truncates from the head, which removes
+   the FIM sentinel and returns HTTP 200. Measured 2026-08-24, `llama-server`
+   instead returns a typed HTTP 400 carrying both `n_prompt_tokens` and `n_ctx`,
+   and exposes the window on the OpenAI path — so the hazard is ollama's, not the
+   design's, and the check is enforceable rather than merely documentable.
+10. **The measurements were laptop-CPU measurements — §8.3.4 has now been re-run
+    on a GPU box, twice.** Every latency figure in §8.3.1 still comes from a
+    machine with no discrete GPU (`size_vram=0`), and the shipped defaults still
+    follow from it. What changed 2026-08-24 is that the alternate tier is measured
+    rather than estimated: prefill ~1450 tok/s (**~20x** the baseline), decode
+    ~43 tok/s (**~2.4x**).
+
+    **The estimate's error was assuming one factor covers both.** It took a GPU to
+    speed up prefill and decode alike, so raising `fim.max_tokens` to 256 looked
+    free. The two move together in direction but not in magnitude, because they
+    are bound by different resources: decode reads the whole weight set **once per
+    token** and is bandwidth-bound, while prefill reads it once per **batch of
+    hundreds** and is compute-bound. A GPU brings far more compute than bandwidth
+    over a CPU, so prefill gains ~8x more than decode does. A latency budget that
+    folds them into a single tok/s number cannot see this and will mis-tune
+    whichever one it did not measure separately. §8.3.4 now measures both, and
+    `fim.max_tokens = 256` is affordable there — 6.0 s of the ~8.0 s cold submit —
+    but on the measurement, not on the inference.
+
+    The corollary is a measurement rule: an aggregate tok/s figure diagnoses
+    nothing. Decode step time is *linear in context*, so fitting it across context
+    lengths splits the context-independent weight read from the context-dependent
+    KV read, and reading each as a bandwidth says whether the model is where you
+    think it is. `scripts/measure/prefill.lua decompose` is that fit. Related: a
+    datasheet bandwidth figure over-predicts decode by ~1.6x, so size from ~60% of
+    spec.
+
+11. **A published performance figure was wrong, and the process that produced it
+    is the gap.** §8.3.4 was written up once from measurements taken while the
+    remote server was not serving the model from its GPU. Decode read 11.4–14.3
+    tok/s against the true 42.6–44.4, and the section concluded — in this file, in
+    `IMPLEMENTATION.md`'s headline, and in a config comment warning the reader off
+    `fim.max_tokens = 256` — that a GPU makes decode *worse* than a laptop CPU.
+    The figures were real; the system they described was not the one anyone
+    intended to describe. Three failures compounded:
+
+    - **Reproducibility was read as validity.** The bad numbers were stable to
+      three significant figures across two server restarts, and that stability
+      raised confidence in them. It should not have: it established only that the
+      misconfiguration was stable. Reproducibility says you are measuring
+      *something* consistently, never that it is the right something.
+    - **The surprising conclusion got a lower bar rather than a higher one.** "A
+      GPU makes decode slower" contradicts how the hardware works, and that was
+      the moment to stop and check the configuration rather than to write it up as
+      a finding. Surprise is evidence of a broken assumption *somewhere*, and the
+      measurement apparatus is a likelier place than the physics.
+    - **Numeric agreement was taken for mechanism.** It was inferred that ~15% of
+      the weights (≈0.64 GiB) had been evicted from a 6 GB card by a 896 MiB KV
+      allocation — an inference whose arithmetic matched the 672 MiB that
+      `--parallel 1` frees to within 5%. The server was restarted with
+      `--parallel 1` and the step time did not move by a millisecond. The
+      agreement was coincidence. Only changing an input and watching the output
+      move is evidence for a mechanism.
+
+    What partly saved it: the decomposition was run, and it correctly reported the
+    weights being read at 68 GB/s — host-memory speed on a 336 GB/s card. The
+    diagnosis was *present in the document* and was written up as an open question
+    alongside a tier presented as shippable. The rule that follows is that this
+    combination is not allowed: a measurement whose own diagnostics say the system
+    is misconfigured is not a caveat on a result, it is a blocker on publishing
+    one. §8.3.4 carries the correction note; §8.3.4's reproduction procedure now
+    has "run the decomposition and read the implied bandwidths" as a numbered step
+    before any figure is recorded.
+
+12. **Call hierarchy, and what a "consumer" costs.** [R§11.9] listed
     `callHierarchy/incomingCalls` as the strongest cross-file signal and priced
     it at two requests. Measured 2026-08-23, the price is not the problem:
     `lua_ls` does not implement the method at all (`-32601`), and

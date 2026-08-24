@@ -80,10 +80,12 @@ This rung needs no headroom for anything else: the whole-file path skips the
 import block entirely (the imports are already in the payload), so it is the one
 rung allowed to spend the code reserve down to the last token.
 
-**On a GPU (§8.3.4), `reserve.code` is 2112 tokens and every rung in the table
-fits.** There, 80 or even 150 lines becomes a free choice governed by context
-quality rather than by the budget, and §8.3.4 raises `whole_file.max_bytes`
-accordingly.
+**On §8.3.4's measured remote tier, `reserve.code` is 1549 tokens and every rung
+in the table fits** — the 150-line rung is 1106 tokens, 71% of the reserve. There,
+80 or even 150 lines becomes a free choice governed by context quality rather than
+by the budget, and §8.3.4 raises `whole_file.max_bytes` to 6144 accordingly. Note
+that tier measures **4.07** bytes/token rather than 3.9 (exactly, via llama.cpp's
+`/tokenize`), so a line is ~7.4 tokens there, not 7.7.
 
 **Both limits must pass, and `max_bytes` is the real guard.** A 60-line file of
 minified JavaScript, generated code, or long data literals can be hundreds of

@@ -1,4 +1,4 @@
-.PHONY: test test-one lint format typecheck check dev clean measure-consumers
+.PHONY: test test-one lint format typecheck check dev clean measure-consumers measure-prefill
 
 test:
 	nvim -l tests/minit.lua --minitest $(FILE)
@@ -27,6 +27,13 @@ check: lint typecheck test
 # skips the ones that are absent. See scripts/measure/consumers.lua.
 measure-consumers:
 	nvim -l scripts/measure/consumers.lua
+
+# Re-measures §8.3.1 / §8.3.4: prefill and decode throughput, what the prefix
+# cache is worth, bytes per token, and what the server does past its window.
+# Defaults to $HIVE_MEASURE_URL, else the local ollama. See
+# scripts/measure/prefill.lua.
+measure-prefill:
+	nvim -l scripts/measure/prefill.lua all
 
 dev:
 	nvim -u repro/repro.lua

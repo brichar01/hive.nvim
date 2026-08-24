@@ -140,12 +140,14 @@ verified here:
 
 ### 9.6 When the server is not on this machine
 
-§8.3.4's GPU tier is reached in practice by pointing `base_url` at another
-machine, not by buying a GPU for this one. That is a supported move — `base_url`
-is already the only coupling point, and `openai` is already the correct profile
-for `llama-server`, vLLM and LM Studio (§9.1) — but three assumptions in the
-transport are **loopback assumptions**, and each fails quietly rather than
-loudly once there is a network in between.
+§8.3.4's remote GPU tier is reached in practice by pointing `base_url` at another
+machine, not by buying a GPU for this one — and as of 2026-08-24 that is how it
+was measured: `llama-server` on `192.168.50.133:8181`, reached over the LAN, on
+the `openai` profile. That is a supported move — `base_url` is already the only
+coupling point, and `openai` is already the correct profile for `llama-server`,
+vLLM and LM Studio (§9.1) — but three assumptions in the transport are **loopback
+assumptions**, and each fails quietly rather than loudly once there is a network
+in between.
 
 **1. A dead remote host stalls for the whole `timeout`, not instantly.**
 Measured 2026-08-23, curl 8.21.0:

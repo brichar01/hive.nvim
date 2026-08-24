@@ -16,11 +16,25 @@ extmark / undo behaviour in this document was measured on this machine on
 > tok/s** (§8.3.1). That single number, not model capability and not the
 > retrieval literature, is what sets `budget.total_tokens` in §2.
 >
-> **These defaults are wrong for a machine with a dedicated GPU and must be
-> re-measured there.** A discrete GPU raises prefill by one to two orders of
-> magnitude, which moves the binding constraint from latency back to context
-> quality and makes the larger tier in §8.3.4 correct. §8.3.5 is the procedure
-> for re-deriving them; treat every number in §8.3.1 as hardware-local.
+> **These defaults are wrong for a machine with a GPU, and §8.3.4 has now been
+> measured on one** — `llama-server` at `192.168.50.133:8181` serving
+> `Qwen2.5-Coder-7B-Instruct` Q4_K_M on an RTX 2060 (6 GB), 2026-08-24. Prefill
+> there is **1412–1496 tok/s**, ~20x this baseline, and flat rather than
+> degrading; decode is **42.6–44.4 tok/s**, ~2.4x. Both improve, but by very
+> different factors, and that asymmetry is the finding: prompt tokens get ~20x
+> cheaper while completion tokens get ~2.4x cheaper, so the binding constraint
+> moves from prefill to **decode** rather than to context quality. The measured
+> tier is `total_tokens = 3072` with `fim.max_tokens = 256` — a ~8.0 s cold
+> submit, of which 6.0 s is decode. Treat every number in §8.3.1 as hardware-local
+> and every number in §8.3.4 as hardware-*and-configuration*-local.
+>
+> **§8.3.4 was published once with wrong figures**, taken from this server while
+> it was not serving the model from the card: decode read as 11.4–14.3 tok/s and
+> the section concluded that a GPU makes decode *worse*. It does not. The
+> correction, and the three reasoning errors that let a measurement of a
+> misconfiguration reach this file's headline, are at the end of §8.3.4; the
+> practical residue is that a performance figure needs the system verified to be
+> in the configuration you mean to describe before it is written down.
 
 **This file is an index.** The plan lives in `notes/implementation/`, split by
 topic. Section numbers (`§0`–`§16`) are unchanged, so every internal `§n`
@@ -98,8 +112,10 @@ different on each of the three servers that do.
 sentinel sets per model family (§8.1), the layout (§8.2), and then §8.3 — the
 budget, which is the analytical core of the document. It derives every number in
 §2's `budget` table from the measured CPU prefill rate (§8.3.1), sets the region
-reserves so the whole-file rung of §6.2 fits exactly (§8.3.3), gives the larger
-GPU tier (§8.3.4), the procedure for re-deriving all of it on other hardware
+reserves so the whole-file rung of §6.2 fits exactly (§8.3.3), gives the second,
+**measured** tier for the remote GPU server, why decode rather than prefill binds
+there, and the correction notice on that section's first published figures
+(§8.3.4), the procedure for re-deriving all of it on other hardware
 (§8.3.5), and the spend/trim/donate order — code → context → notes (§8.3.6).
 
 ### [7. Transport](notes/implementation/07-transport.md) — §9

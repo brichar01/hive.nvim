@@ -105,8 +105,10 @@ budget (`IMPLEMENTATION.md` §8.3), and its body is one `stdin` string.
 One correction to that framing, from measurement: hive's budget is token-shaped
 but **latency-bound**. `IMPLEMENTATION.md` §8.3.1 measures 59–88 tok/s of prefill
 on this CPU-only machine, so the ceiling is set by how long a submit may take,
-not by what the model can hold — and those figures, and every default derived
-from them, must be re-measured on a machine with a dedicated GPU (§8.3.4).
+not by what the model can hold. Those figures were re-measured on a GPU server
+2026-08-24 (§8.3.4) and the framing survives: prefill goes ~20x faster there but
+decode only ~2.4x, so the budget stays latency-bound — the latency just relocates
+from the prompt to the completion, which is now ~75% of a cold submit.
 
 ### 8.10 Correctness checklist
 
