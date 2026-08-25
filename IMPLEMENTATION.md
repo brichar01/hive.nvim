@@ -43,7 +43,7 @@ of that.
 > you mean to describe before writing a performance figure down.
 
 **This file is an index.** The plan lives in `notes/implementation/`, split by
-topic. Section numbers (`§0`–`§16`) are unchanged, so every internal `§n`
+topic. Section numbers (`§0`–`§17`) are unchanged, so every internal `§n`
 cross-reference still resolves — use the section map below to find the file.
 
 ---
@@ -190,6 +190,19 @@ conclusion was true about the HTTP *body* and silently wrong about the
 *endpoint*. §16.2 is what the research has that this plan must not lose. §16.3
 is the findings the research carries that this design deliberately retires.
 
+### [13. Extension ideas](notes/implementation/13-extension-ideas.md) — §17
+
+Designs worth writing down before they are worth building. **Nothing here is
+measured or in §15's build order**, and each idea carries its own list of what
+would have to be measured first. §17.1 is per-file plans generated from a prose
+plan file: a structured file of one record per source file — role if new, change
+if it exists — seeding R1 for the matching target. Recorded because the sense
+check turned up more than the idea itself: it is really the specification R1 has
+never had, §1's module layout table is the same artifact hand-written and so
+doubles as the generator's acceptance test, and it collides with six things in
+the plan as it stands — I1's write rule, §8.3.6's top-first R1 trim, §3.1's slug,
+I5, staleness, and §0.2.
+
 ---
 
 ## Section map
@@ -213,3 +226,4 @@ is the findings the research carries that this design deliberately retires.
 | §14 Tests | [10-health-and-tests.md](notes/implementation/10-health-and-tests.md) |
 | §15 Build order | [11-build-order.md](notes/implementation/11-build-order.md) |
 | §16 Gaps found while writing this | [12-gaps.md](notes/implementation/12-gaps.md) |
+| §17 Extension ideas | [13-extension-ideas.md](notes/implementation/13-extension-ideas.md) |
