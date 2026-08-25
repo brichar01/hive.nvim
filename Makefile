@@ -1,4 +1,4 @@
-.PHONY: test test-one lint format typecheck check dev clean measure-consumers measure-prefill
+.PHONY: test test-one lint format typecheck check dev clean measure-consumers measure-prefill verify-folds
 
 test:
 	nvim -l tests/minit.lua --minitest $(FILE)
@@ -35,6 +35,12 @@ measure-consumers:
 # scripts/measure/prefill.lua.
 measure-prefill:
 	nvim -l scripts/measure/prefill.lua all
+
+# Re-verifies §17.2: that a `{{{`/`}}}` marker in R1 keeps a section out of the
+# prompt durably, and that the fold is only its rendering. Needs no server and
+# no parser; exits non-zero on a failed check. See scripts/verify/folds.lua.
+verify-folds:
+	nvim -l scripts/verify/folds.lua
 
 dev:
 	nvim -u repro/repro.lua
