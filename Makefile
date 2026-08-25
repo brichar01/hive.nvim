@@ -30,7 +30,8 @@ measure-consumers:
 
 # Re-measures §8.3.1 / §8.3.4: prefill and decode throughput, what the prefix
 # cache is worth, bytes per token, and what the server does past its window.
-# Defaults to $HIVE_MEASURE_URL, else the local ollama. See
+# Defaults to $HIVE_MEASURE_URL, else the local llama-server on :8080. Run the
+# `decompose` mode first on a new server (§8.3.8). See
 # scripts/measure/prefill.lua.
 measure-prefill:
 	nvim -l scripts/measure/prefill.lua all

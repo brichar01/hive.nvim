@@ -98,17 +98,15 @@ function M.parse_completion(res)
   end
 
   -- An empty string is a successful-looking failure: HTTP 200, a plausible
-  -- token count, and nothing to show. The usual cause is a thinking model
-  -- behind a compatibility layer that maps only the answer channel and drops
-  -- the reasoning one, so the tokens are real but unreachable.
+  -- token count, and nothing to show. A stop string that matches at position 0
+  -- consumes the whole completion and reports it as generated.
   if choice.text == "" then
     local generated = decoded.usage and decoded.usage.completion_tokens or 0
     if generated > 0 then
       return (
         "model returned an empty completion (server generated %d tokens but "
-        .. "returned no text — a thinking model on an endpoint that drops the "
-        .. "reasoning channel? try a non-thinking model, or a server whose "
-        .. "native endpoint exposes it)"
+        .. "returned no text — check the stop strings: one that matches at "
+        .. "position 0 consumes everything)"
       ):format(generated)
     end
     return "model returned an empty completion"

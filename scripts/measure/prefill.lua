@@ -10,22 +10,21 @@
 --
 -- Modes: prefill | decode | decompose | concurrency | cache | bpt | overflow |
 --        all (default).
--- Default url: $HIVE_MEASURE_URL, else http://localhost:11434.
+-- Default url: $HIVE_MEASURE_URL, else http://localhost:8080.
 --
 -- Self-contained: curl and this repo's own Lua as the corpus, nothing else.
--- Detects llama.cpp (`/props`) or ollama (`/api/version`) and uses the native
--- raw-completion path of whichever answers — no chat template, because a
--- template would measure the wrapper (§9.1).
+-- Talks to `llama-server` on its native `/completion` path — not
+-- `/v1/completions` — so nothing is measured through a wrapper (§9.1).
 --
--- **Every request carries a unique leading marker**, and on llama.cpp also
--- `cache_prompt: false`. Both where both exist; ollama has no such option, so
--- there the marker is the only defence. A first attempt at §8.3.1 made each
--- prompt a byte prefix of the next and measured the cache instead of the model,
--- reporting ~3x faster than the truth; on the §8.3.4 server the same mistake is
--- worth ~15x.
+-- **Every request carries a unique leading marker AND `cache_prompt: false`.**
+-- Both, not either: the marker defeats a prefix match and the flag defeats the
+-- slot's retained KV. A first attempt at §8.3.1 made each prompt a byte prefix
+-- of the next and measured the cache instead of the model, reporting ~3x faster
+-- than the truth; on the §8.3.4 server the same mistake is worth ~15x.
 --
--- `all` against a CPU-only server takes 20+ minutes — the 3900-token prefill row
--- alone is ~70 s per repetition. Run single modes there.
+-- `all` against a server with the model in host memory takes 20+ minutes. Run
+-- single modes there, and read §8.3.8 — that is the state to diagnose, not to
+-- benchmark around.
 --
 -- `decompose` is the one that diagnoses rather than reports: decode step time is
 -- linear in context, so fitting it separates the context-independent weight read
@@ -41,7 +40,7 @@
 -- The 2026-08-24 baselines this reproduces are in notes/research/05-verification.md.
 
 local MODE = arg[1] or "all"
-local URL = (arg[2] or vim.env.HIVE_MEASURE_URL or "http://localhost:11434"):gsub("/$", "")
+local URL = (arg[2] or vim.env.HIVE_MEASURE_URL or "http://localhost:8080"):gsub("/$", "")
 
 local function out(...)
   io.stdout:write(string.format(...), "\n")
@@ -84,21 +83,17 @@ end
 -- server flavour ------------------------------------------------------------
 
 local props = get("/props")
-local API = props and "llamacpp" or (get("/api/version") and "ollama" or nil)
-if not API then
-  die("no llama.cpp or ollama server answered at %s", URL)
+if not props then
+  die("no llama-server answered /props at %s", URL)
 end
 
-local MODEL = vim.env.HIVE_MEASURE_MODEL or "qwen2.5-coder:3b"
-local WEIGHT_BYTES = nil
-if API == "llamacpp" then
-  MODEL = props.model_alias or MODEL
-  local models = get("/v1/models")
-  local first = models and models.data and models.data[1]
-  WEIGHT_BYTES = first and first.meta and first.meta.size
-end
+local models = get("/v1/models")
+local first = models and models.data and models.data[1]
+local META = (first and first.meta) or {}
+local MODEL = props.model_alias or (first and first.id) or "?"
+local WEIGHT_BYTES = META.size
 
-out("server   %s  (%s)", URL, API)
+out("server   %s", URL)
 out("model    %s", MODEL)
 
 -- corpus --------------------------------------------------------------------
@@ -126,100 +121,63 @@ local function marker()
   return ("-- run-%d-%d unique-marker\n"):format(vim.uv.hrtime() % 1e9, seq)
 end
 
--- token counting: exact on llama.cpp, absent on ollama (§8.3.5) -------------
+-- token counting: exact, via the server's own tokenizer (§8.3.5) ------------
 
 local function ntok(text)
-  if API ~= "llamacpp" then
-    return nil
-  end
   local body = post("/tokenize", { content = text })
   return body and #body.tokens or nil
 end
 
---- One raw completion. Returns prefill ms, prefilled tokens, decode ms,
---- decoded tokens — normalised across the two APIs.
+--- One raw completion. Returns prefill ms, prefilled tokens, decode ms and
+--- decoded tokens. `prefill_n` is what was PREFILLED and `prompt_n` is the
+--- prompt length — they differ whenever the cache hit (§8.3.5).
 local function complete(prompt, n_predict, opts)
   opts = opts or {}
-  local body, status
-  if API == "llamacpp" then
-    body, status = post("/completion", {
-      prompt = prompt,
-      n_predict = n_predict,
-      cache_prompt = opts.cache or false,
-      ignore_eos = opts.ignore_eos or false,
-      temperature = 0,
-      top_k = 1,
-      seed = 1,
-    })
-    if status ~= 200 then
-      return nil, status, body
-    end
-    local t = body.timings
-    return {
-      prefill_ms = t.prompt_ms,
-      prefill_n = t.prompt_n,
-      prompt_n = body.tokens_evaluated,
-      decode_ms = t.predicted_ms,
-      decode_n = t.predicted_n,
-    }
-  end
-  body, status = post("/api/generate", {
-    model = MODEL,
+  local body, status = post("/completion", {
     prompt = prompt,
-    raw = true,
-    stream = false,
-    options = { num_predict = n_predict, temperature = 0, top_k = 1, seed = 1 },
+    n_predict = n_predict,
+    cache_prompt = opts.cache or false,
+    ignore_eos = opts.ignore_eos or false,
+    temperature = 0,
+    top_k = 1,
+    seed = 1,
   })
   if status ~= 200 then
     return nil, status, body
   end
+  local t = body.timings
   return {
-    prefill_ms = (body.prompt_eval_duration or 0) / 1e6,
-    prefill_n = body.prompt_eval_count,
-    prompt_n = body.prompt_eval_count,
-    decode_ms = (body.eval_duration or 0) / 1e6,
-    decode_n = body.eval_count,
+    prefill_ms = t.prompt_ms,
+    prefill_n = t.prompt_n,
+    prompt_n = body.tokens_evaluated,
+    decode_ms = t.predicted_ms,
+    decode_n = t.predicted_n,
+    predicted_n = body.tokens_predicted,
+    stop_type = body.stop_type,
   }
 end
 
--- Warm the model before anything is timed — §8.3.4 step 1 asks for it, and on
--- ollama it is load-bearing for a second reason: `/api/ps` returns an empty
--- `models` list until something is resident, so the window cannot be read at all
--- until a request has set it. That is §8.3.7's trap seen from the client side.
+-- Warm the model before anything is timed — §8.3.4 step 1 asks for it.
 do
   local warm = complete(marker() .. "local x = 1\n", 1)
   if not warm then
     die("the warm-up request failed — is %s serving %s?", URL, MODEL)
   end
-  if API == "llamacpp" then
-    out("window   %d per slot x %d slots", props.default_generation_settings.n_ctx, props.total_slots)
-    out("weights  %.2f GiB", (WEIGHT_BYTES or 0) / 2 ^ 30)
-  else
-    local m = (get("/api/ps") or {}).models
-    m = m and m[1]
-    if m then
-      WEIGHT_BYTES = m.size
-      out("window   %s (/api/ps, i.e. the live num_ctx — not /api/show; §8.3.7)", m.context_length or "?")
-      out(
-        "weights  %.2f GiB, of which %.2f GiB in VRAM%s",
-        (m.size or 0) / 2 ^ 30,
-        (m.size_vram or 0) / 2 ^ 30,
-        (m.size_vram or 0) == 0 and "  <- CPU-only, the §8.3.1 baseline" or ""
-      )
-    else
-      out("window   ? — /api/ps reported no loaded model even after a request")
-    end
-  end
+  -- The per-slot window is what binds, and it is --ctx-size / --parallel. The
+  -- architectural maximum is reported beside it because it is what gets
+  -- misread for it (§8.3.7).
+  out("window   %d per slot x %d slots  (n_ctx_train %s)",
+    props.default_generation_settings.n_ctx,
+    props.total_slots,
+    META.n_ctx_train or "?")
+  out("weights  %.2f GiB", (WEIGHT_BYTES or 0) / 2 ^ 30)
 end
 out("")
 
---- A prompt of about `target` tokens, with a unique leading marker.
---- Exact by bisection where a tokenizer exists, else by `bytes_per_token`.
+--- A prompt of exactly `target` tokens, with a unique leading marker.
+--- Exact by bisection against the server's own tokenizer.
 local function build(target)
   local head = marker()
-  if API ~= "llamacpp" then
-    return head .. CORPUS:sub(1, math.floor(target * 3.9) - #head)
-  end
   local lo, hi = 0, #CORPUS
   while lo < hi do
     local mid = math.floor((lo + hi) / 2)
@@ -273,10 +231,10 @@ function M.decode()
     local m = median(ms)
     out("%14d %10d %10.0f %8.1f", case[1], npred, m, npred / (m / 1000))
   end
-  out("\nDecode is bandwidth-bound and prefill is compute-bound: do not assume")
-  out("one from the other. Both improve on a GPU, but by different factors --")
-  out("§8.3.4 measures ~20x for prefill and ~2.4x for decode. fim.max_tokens")
-  out("follows from this number, never from the prefill one.")
+  out("\nDecode is bandwidth-bound and prefill is compute-bound, so one does not")
+  out("predict the other: §8.3.1 and §8.3.4 measure servers 0.75x apart on")
+  out("prefill and 0.94x apart on decode. fim.max_tokens follows from THIS")
+  out("number, never from the prefill one -- it is most of a cold submit.")
 end
 
 function M.cache()
@@ -296,10 +254,6 @@ function M.cache()
 end
 
 function M.bpt()
-  if API ~= "llamacpp" then
-    out("\n== bytes/token: skipped, ollama has no tokenizer endpoint (§8.3.5)")
-    return
-  end
   out("\n== bytes/token, exact, over lua/hive/*.lua")
   out("%9s %8s %13s", "bytes", "tokens", "bytes/token")
   for _, b in ipairs({ 800, 1600, 3200, 6400, 12800, #CORPUS }) do
@@ -309,18 +263,33 @@ function M.bpt()
   end
 end
 
+--- The two ways to overrun the window (§8.3.7). The first is loud, the second
+--- is not: a prompt that fits with a completion that does not returns 200 and a
+--- stop_type no different from a normal n_predict cap.
 function M.overflow()
-  out("\n== over the window (§8.3.7)")
+  local window = props.default_generation_settings.n_ctx
+  out("\n== over the window (§8.3.7), window %d", window)
+
   local prompt = build(4000) .. CORPUS:sub(1, 3000)
   local n = ntok(prompt)
   local r, status, body = complete(prompt, 8)
   if r then
-    out("HTTP 200 with %s prompt tokens — check whether it TRUNCATED", n or "?")
+    out("prompt-too-long: HTTP 200 with %s prompt tokens — this server SHOULD refuse", n or "?")
     out("  prefilled %d, decoded %d", r.prefill_n, r.decode_n or 0)
-    out("  ollama truncates from the head and beheads the FIM sentinel: §8.3.7")
   else
-    out("HTTP %d for %s prompt tokens — a loud failure, which is the good case", status, n or "?")
+    out("prompt-too-long: HTTP %d for %s prompt tokens — loud, which is the good case", status, n or "?")
     out("  %s", vim.inspect(body):gsub("%s+", " "):sub(1, 220))
+  end
+
+  local NPRED = 64
+  local snug = build(window - 6)
+  local r2 = complete(snug, NPRED)
+  if r2 then
+    out("completion-too-long: HTTP 200, asked %d, got %d, stop_type %q",
+      NPRED, r2.predicted_n or r2.decode_n or 0, r2.stop_type or "?")
+    if (r2.predicted_n or 0) < NPRED then
+      out("  <- silently truncated. Nothing but this comparison detects it: §9.4")
+    end
   end
 end
 
@@ -368,7 +337,11 @@ function M.decompose()
   -- reports it) and the KV size per token (it does not — this is the
   -- Qwen2.5-Coder-7B figure, override for another model).
   local weights = WEIGHT_BYTES
-  local kv_per_tok = tonumber(vim.env.HIVE_MEASURE_KV_BYTES or "") or (56 * 1024)
+  -- Qwen2.5-Coder-3B: 36 blocks x 2 KV heads x 128 dims x 2 (K and V) x 2 B
+  -- for f16 = 36 KiB/token. The 7B is 28 x 4 x 128 = 56 KiB. No endpoint
+  -- reports block_count, so this cannot be derived -- override it for any
+  -- other model, and read the printed assumption before trusting the GB/s.
+  local kv_per_tok = tonumber(vim.env.HIVE_MEASURE_KV_BYTES or "") or (36 * 1024)
   if not weights then
     out("weight size unknown on this API — skipping the bandwidth reading")
     return
@@ -416,7 +389,7 @@ function M.concurrency()
           ignore_eos = true,
           temperature = 0,
         }),
-        URL .. (API == "llamacpp" and "/completion" or "/api/generate"),
+        URL .. "/completion",
       }, { text = true })
     end
     for _, job in ipairs(jobs) do

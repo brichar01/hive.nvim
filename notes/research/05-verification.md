@@ -138,13 +138,13 @@ nvim -l scripts/measure/prefill.lua bpt         $S  # exact bytes/token
 nvim -l scripts/measure/prefill.lua overflow    $S  # the 400
 ```
 
-It detects llama.cpp or ollama from `/props` versus `/api/version` and uses the
-native raw path of whichever answers, so the same harness re-derives §8.3.1
-against the local ollama (`nvim -l scripts/measure/prefill.lua all`, no url).
+It talks to any `llama-server` on its native `/completion` path, so the same
+harness re-derives §8.3.1 against the local one
+(`nvim -l scripts/measure/prefill.lua all`, no url).
 
-Expected: prefill plateaus at ~1410–1500 tok/s from 800 tokens up (**not**
-degrading, which is the whole difference from §8.3.1); decode 44.0 tok/s at a
-200-token prompt falling only to 42.6 at 3200; `bpt` converging on 4.07;
+Expected: prefill plateaus at ~1410–1500 tok/s from 800 tokens up; decode
+44.0 tok/s at a 200-token prompt falling only to 42.6 at 3200; `bpt` converging
+on 4.07;
 `overflow` returning HTTP 400 `exceed_context_size_error`. If `prefill` reports
 3000+ tok/s or a *rising* curve past 1600, the prefix cache is not defeated —
 check that both the unique marker and `cache_prompt: false` are in the request.
@@ -195,7 +195,7 @@ any of the above:
 curl -s $S/props | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d["default_generation_settings"]["n_ctx"], d["total_slots"], d["model_alias"])'
 # 4096 1 Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M
 
-# an exact tokenizer exists here, unlike ollama (§8.3.5)
+# the tokenizer is exact, so the budget is not an estimate (§8.3.5)
 curl -s $S/tokenize -d '{"content":"local x = 1\n"}' -H 'Content-Type: application/json'
 
 # prompt_n counts what was PREFILLED; usage.prompt_tokens counts the prompt.
@@ -223,7 +223,7 @@ nvim --headless -c 'lua io.write(vim.env.VIMRUNTIME)' -c q
 ls ~/.local/share/nvim/site/parser/            # c html python tsx typescript
 ls -l ~/.local/share/nvim/site/queries/        # 8 symlinks into tree-sitter-manager
 ls /usr/share/nvim/runtime/parser/             # the 7 bundled parsers
-curl -s localhost:11434/api/version            # the local model server
+curl -s localhost:8080/props | head -c 200     # the local server (§8.3.1)
 curl -s 192.168.50.133:8181/health              # the §8.3.4 remote server
 curl -s 192.168.50.133:8181/props | head -c 200 # ...and what it is serving
 ```

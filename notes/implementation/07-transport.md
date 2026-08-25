@@ -8,60 +8,34 @@ the split; a `§n` cross-reference still resolves via the section map in the ind
 
 ## 9. Transport
 
-### 9.1 Two profiles, and why `/v1/completions` is not enough
+### 9.1 One transport: `POST /v1/completions`
 
-The existing `hive.api` speaks `POST /v1/completions` with `{ model, prompt,
-max_tokens, stream = false }`. Measured against the server actually running here
-(ollama 0.32.5), that path **cannot carry this design**:
+hive speaks `POST /v1/completions` to a `llama-server`, and nothing else. There
+is no profile to choose and no probe to run.
 
-| Probe | Result |
-| --- | --- |
-| `/v1/completions`, plain | 200, but `text = ""` with `finish_reason = "length"` and `completion_tokens = 120` |
-| where the tokens went | native `/api/generate` shows them in a `thinking` field; the compat layer maps only `response` |
-| `"think": false` on `/v1/completions` | **silently ignored**, text still `""` |
-| `"suffix"` on `/v1/completions` | HTTP 400 `"<model> does not support insert"` — model-gated |
-| is `prompt` templated? | **yes.** `prompt = "x"` reports `prompt_tokens = 11`; ~10 tokens of chat wrapper |
-| `/api/generate` + `raw: true`, `prompt = "x"` | `prompt_eval_count = 1` — genuinely raw |
-| `/api/generate` + `raw: true` + `think: false` | `"def add(a, b):\n    return"` → `" a + b\n\nprint(…)"` |
-| `/api/generate` + `raw: true` + hand-rolled FIM sentinels | works; 21 prompt tokens, stops on the stop token |
-| `/api/generate` + `raw: true` + `suffix` | still 400, model-gated |
+```
+POST {base_url}/v1/completions
+{ "model": …, "prompt": …, "max_tokens": …, "stop": [ … ], "stream": false }
+```
 
-Three consequences, each of which would have cost a day to discover during
-implementation:
+Response text is `.choices[1].text`, the cache-immune prompt count is
+`usage.prompt_tokens` (§8.3.5), and the stop reason is
+`.choices[1].finish_reason`.
 
-1. **A thinking model returns an empty completion through the OpenAI-compatible
-   endpoint, with a successful status and a plausible token count.** `parse_completion`
-   currently accepts `choices[1].text == ""` as success. It must not (§9.4).
-2. **Templating rules out hand-assembled FIM prompts on `/v1/completions`.** §8.2's
-   layout would be wrapped in chat markup.
-3. `suffix` — the clean, server-side FIM path — is gated on the model's template,
-   so it cannot be relied on even when the endpoint accepts the field.
+**The endpoint carries this design because `llama-server` does not template
+`prompt`.** Measured 2026-08-25 on build 10612: `prompt = "x"` reports
+`prompt_tokens = 1`, so §8.2's hand-assembled FIM layout arrives at the model
+exactly as written, sentinels and all. That is the whole requirement, and it is
+why the layout is assembled by hand rather than delegated to a server-side
+`suffix` parameter — hive needs R1 and R2 *inside* the FIM prefix, which `suffix`
+has nowhere to put. §9.7 has the measurements.
 
-Hence two profiles:
-
-- **`ollama_raw`** — `POST /api/generate`, body `{ model, prompt, raw = true,
-  think = false, stream = false, options = { num_predict, stop, num_ctx } }`.
-  Response text is `.response`; prompt tokens are `.prompt_eval_count`. This is
-  the path that works here and the default after probing. **`num_ctx` is not
-  optional** — omit it and ollama silently applies its 4096 default and truncates
-  the prompt from the head, taking the FIM sentinel with it (§8.3.7).
-- **`openai`** — `POST /v1/completions`, body `{ model, prompt, max_tokens, stop,
-  stream = false }`. Correct for `llama-server`, vLLM and LM Studio, which do not
-  template `prompt`. Response text is `.choices[1].text`. This body **has nowhere
-  to put `num_ctx`**, so §8.3.7's ceiling has to be checked and refused rather
-  than enforced.
-
-`transport = "auto"` probes once per Neovim session and caches the result:
-`GET {base_url}/api/version` succeeding ⇒ `ollama_raw`, otherwise `openai`. The
-probe is also a health check (§13).
-
-Re-verified 2026-08-21, later pass: every row in the probe table reproduces on
-qwen3.5:0.8b. Since the original measurement, `qwen2.5-coder:3b` was installed
-locally — it carries ollama's `insert` capability, so `suffix` on
-`/v1/completions` returns 200 with real text *for that model*. Nothing
-structural changes — `suffix` is still model-gated and `/v1/completions` still
-templates `prompt`, so `ollama_raw` with hand-rolled sentinels remains the
-default — but FIM is now testable end-to-end on this machine.
+**`model` is a courtesy field here.** This server ignores it and answers from the
+single loaded model: a request naming `"default"` came back with
+`model: "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF:Q6_K"`. `Config.model` therefore
+defaults to a placeholder and exists for servers that serve several, which is why
+§13's check compares it against `/v1/models` rather than assuming a 400 will say
+so.
 
 ### 9.2 Do not "upgrade" the body transport
 
@@ -101,22 +75,43 @@ is the pattern telescope uses [R§8.4].
 
 ### 9.4 Response validation
 
-`api.parse_completion` gains, before returning success:
+Two checks, before `api.parse_completion` returns success.
+
+**1. An empty completion is a failure, not a success.** `parse_completion`
+currently accepts `choices[1].text == ""`, and a 200 with an empty string and a
+plausible token count presents to the user as "hive does nothing".
 
 ```lua
 if completion.text == "" then
   local hint = ""
   if decoded.usage and (decoded.usage.completion_tokens or 0) > 0 then
     hint = " (server generated " .. decoded.usage.completion_tokens ..
-           " tokens but returned no text — a thinking model on an endpoint that " ..
-           "drops the reasoning channel? try transport = \"ollama_raw\")"
+           " tokens but returned no text — check `fim.stop`: a stop string that " ..
+           "matches at position 0 consumes the whole completion)"
   end
   return "model returned an empty completion" .. hint
 end
 ```
 
-This is the single most valuable error message in the plugin: it is the exact
-failure measured in §9.1, and without the hint it presents as "hive does nothing".
+The hint names the cause that is actually reachable here. §8.1's dialects put
+`<|endoftext|>` and `<|file_sep|>` in the stop list, and a model that opens with
+one of them returns tokens and no text.
+
+**2. A completion the window truncated must not pass silently.** §8.3.7's second
+case: when the prompt fits and the completion does not, the server stops at the
+window and reports `finish_reason = "length"` with
+`usage.completion_tokens < max_tokens`. That is indistinguishable from a
+legitimate cap unless the two are compared.
+
+```lua
+local n = (decoded.usage or {}).completion_tokens or 0
+if completion.finish_reason == "length" and n > 0 and n < requested_max_tokens then
+  -- warn, do not fail: the text is real
+end
+```
+
+Warn and keep the text. [R§8.10]'s no-silent-caps rule is what makes this a
+report rather than a debug log.
 
 `M.infill_request(parts, opts)` and `M.infill(parts, opts, cb)` mirror the
 existing `completions_request` / `completions` pair, so the existing tests'
@@ -143,10 +138,9 @@ verified here:
 §8.3.4's remote GPU tier is reached in practice by pointing `base_url` at another
 machine, not by buying a GPU for this one — and as of 2026-08-24 that is how it
 was measured: `llama-server` on `192.168.50.133:8181`, reached over the LAN, on
-the `openai` profile. That is a supported move — `base_url` is already the only
-coupling point, and `openai` is already the correct profile for `llama-server`,
-vLLM and LM Studio (§9.1) — but three assumptions in the transport are **loopback
-assumptions**, and each fails quietly rather than loudly once there is a network
+§9.1's endpoint unchanged. That is a supported move — `base_url` is the only
+coupling point, and the request shape is identical either way — but three
+assumptions in the transport are **loopback assumptions**, and each fails quietly rather than loudly once there is a network
 in between.
 
 **1. A dead remote host stalls for the whole `timeout`, not instantly.**
@@ -198,33 +192,54 @@ defensible choice and the warning in §13 check 2b says so rather than insisting
 
 #### What this changes elsewhere in the plan
 
-- **§13 check 8 does not work off-box.** `GET /api/ps` is an ollama endpoint. A
-  remote `llama-server` or vLLM has no equivalent, so `budget.total_tokens`
-  cannot be checked against the server's real window — and §8.3.7's silent
-  head-truncation is *still* the failure mode, now undetectable. On the `openai`
-  profile against a non-ollama server the ceiling has to be asserted by the
-  operator (`llama-server --ctx-size`, vLLM `--max-model-len`) and recorded in
-  config, not discovered. **This is an open gap, not a solved one.**
-- **§13 gains a model check.** Every server names its models differently and
-  `model` defaults to the placeholder `"default"`, so moving the server is
-  exactly when it drifts. `GET /v1/models` already returns the list; comparing
-  `Config.model` against it turns an HTTP 400 at submit time into a
-  `:checkhealth` error naming what *is* served. Cheapest high-value check here.
-- **§8.3's numbers must be re-measured on the remote machine**, per §8.3.4 —
-  they are properties of the inference host, not of hive.
-- **`transport` should be set explicitly to `"openai"`** for a non-ollama remote
-  rather than left on `"auto"`. The probe would fall back correctly (`/api/version`
-  404s), but it costs a round trip on first use, and §9.1 does not say the cached
-  result is keyed by `base_url` — so changing servers mid-session keeps a stale
-  transport. Key the cache by `base_url`.
-- **The `ollama_raw` rationale weakens off-box.** §9.1's two defects — `prompt`
-  being chat-templated, and a thinking model's tokens vanishing — are *ollama
-  compatibility-layer* defects. `llama-server`, vLLM and LM Studio do not
-  template `prompt`, so a remote one makes §8.2's hand-assembled FIM prompts work
-  on `/v1/completions` directly. Keep §9.4's empty-text check regardless: it
-  costs nothing and it is the one error message that explains itself.
-- **`base_url`'s default stays `http://localhost:8080` for now.** §2's block
-  proposes `http://localhost:11434`, but adopting that ahead of §9.1's two-profile
-  work would point the shipped default at ollama's `/v1/completions` — the exact
-  path §9.1 measured as broken. The two land together in build-order step 2.
+- **§13 check 8 works off-box, and that used to be an open gap.** The window is
+  readable from `GET /props` on any `llama-server`, local or remote (§8.3.7), so
+  `budget.total_tokens` can be checked against the server's real window wherever
+  it runs. Against a different OpenAI-compatible server that serves no `/props` —
+  vLLM, LM Studio — the ceiling has to be asserted by the operator
+  (`--max-model-len`) and recorded in config, and the check degrades to `info`.
+- **§13 gains a model check.** A server that serves several models will 400 on a
+  name it does not have, and `model` defaults to a placeholder, so moving the
+  server is exactly when it drifts. `GET /v1/models` already returns the list;
+  comparing `Config.model` against it turns an HTTP 400 at submit time into a
+  `:checkhealth` error naming what *is* served.
+- **§8.3's numbers must be re-measured on the remote machine**, per §8.3.4 and
+  §8.3.8 — they are properties of the inference host and its configuration, not
+  of hive.
+- **`base_url` is the only thing that changes.** The same endpoint, the same
+  body and the same response fields serve a loopback server and a remote one, so
+  pointing hive at another machine is a one-line config change plus the TLS and
+  credential handling above.
+
+### 9.7 The server, measured
+
+Measured 2026-08-25 against the server in §8.3.1: `llama-server` build 10612 on
+`localhost:8080`, `Qwen/Qwen2.5-Coder-3B-Instruct-GGUF:Q6_K`, one slot of 4096.
+These are the probes §9.1 rests on.
+
+| probe | result |
+| --- | --- |
+| `/v1/completions`, `prompt = "x"` | `prompt_tokens = 1` — genuinely raw, no chat template |
+| `/v1/completions` + hand-rolled FIM sentinels | works, `finish_reason = "stop"` after 5 tokens |
+| `/v1/completions` + `suffix` | 200 with real text, server-side FIM works |
+| `/infill` | works |
+| `/v1/completions`, `model = "default"` | 200, answered from the loaded model |
+
+Each FIM sentinel is one special token: `<|fim_prefix|>` 151659, `<|fim_suffix|>`
+151661, `<|fim_middle|>` 151660, `<|file_sep|>` 151664, `<|repo_name|>` 151663.
+So §8.2's layout costs five tokens of framing, not five strings of it.
+
+**`fim.stop` is load-bearing, and which build you have decides how much.** The
+raw FIM request above terminated on its own after five tokens. The 7b instruct
+build on §8.3.4's server, given the same prompt shape, ran past `end` into the
+next function. Neither behaviour is a property of the endpoint, so the stop list
+is what makes the two behave alike. `suffix` and `/infill` both ran to the token
+cap rather than stopping, so the server-side FIM paths need the caller's stop
+list too.
+
+**Why not `/infill`.** It works, and it is the endpoint built for this. It also
+takes `input_prefix` and `input_suffix` as plain strings and assembles the
+sentinels itself, which leaves nowhere to put R1 and R2 inside the FIM prefix
+where §8.2 needs them. Hand-assembling on `/v1/completions` costs nothing and
+keeps the layout under hive's control.
 

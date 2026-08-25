@@ -266,9 +266,10 @@ no extra request.
 4. Take the first `consumers.max`.
 
 **Budget.** A widened call site is one to three lines — roughly 10–30 tokens
-against a `reserve.context` of 269 at the default budget (§8.3.3). Three
-consumers is 11–33% of R2, taken from ranked stubs, which is why it needs its own
-cap rather than sharing `max_symbols`. §8.3.6 places it in the trim order and
+against a `reserve.context` of 845 (§8.3.3). Six consumers is 60–180 tokens of
+the 245 that `max_symbols = 40` leaves, taken from ranked stubs, which is why it
+needs its own cap rather than sharing `max_symbols`. It is a tight fit, and
+§8.3.6 places it in the trim order — consumers go before the last stubs — and
 §8.2 in the layout.
 
 **It returns nothing more often than it returns something.** A function with no

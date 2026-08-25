@@ -15,17 +15,16 @@ notifies, matching the existing `M.setup` behaviour.
 ```lua
 local defaults = {
   -- transport -------------------------------------------------------------
-  base_url = "http://localhost:11434",
-  -- NOTE: the 7b tag is not installed on this machine. Installed 2026-08-21:
-  -- qwen2.5-coder:3b (FIM-capable — ollama reports the `insert` capability)
-  -- and qwen3.5:0.8b (thinking model, no FIM template; §9.1, §9.4). A
-  -- FIM-capable coder model is a hard requirement; `:checkhealth hive`
-  -- (§13.4) is what tells the user their model cannot do FIM.
-  -- 3b, not 7b: on the §8.3.1 CPU baseline a 7b model prefills ~2.5x
-  -- slower, which is not usable. Against §8.3.4's measured remote server the
-  -- 7b is comfortable: prefill 1412-1496 tok/s and decode 42.6-44.4 tok/s,
-  -- so prefer 7b there (§8.3.4).
-  model = "qwen2.5-coder:3b",
+  base_url = "http://localhost:8080",
+  -- A placeholder: `llama-server` serves one model and ignores this field
+  -- (§9.1). It exists for a server that serves several, and §13.2c compares it
+  -- against /v1/models so a wrong name fails at :checkhealth rather than as an
+  -- HTTP 400 at submit time.
+  -- A FIM-capable coder model is a hard requirement; §13.4 is what tells the
+  -- user their model cannot do FIM. Measured here: Qwen2.5-Coder-3B-Instruct
+  -- Q6_K (§8.3.1). The 7b is comfortable on §8.3.4's server and both land on
+  -- the same budget, so size the model to the card, not to this table.
+  model = "default",
   timeout = 60000,
   -- Bounds the connect phase alone. Only matters off-box: loopback refuses a
   -- dead port instantly, a remote host that DROPs packets stalls for the whole
@@ -42,37 +41,36 @@ local defaults = {
     insecure = false,          -- makes TLS decorative; prefer `cacert`
   },
 
-  -- "auto" probes once per session and caches; see §9.1
-  transport = "auto",            -- "auto" | "openai" | "ollama_raw"
-
   -- FIM ------------------------------------------------------------------
   fim = {
     -- sentinel set; "qwen" | "codellama" | "deepseek" | "starcoder" |
     -- "starcoder2" | table
     dialect = "qwen",
-    -- decode is 18.5 tok/s on the §8.3.1 baseline, so this is a ~7 s
-    -- worst case. Measure decode before raising this on other hardware: it
-    -- does NOT scale with prefill. §8.3.4's server prefills ~20x faster than
-    -- the baseline but decodes only ~2.4x faster (43 tok/s), which is what
-    -- affords 256 there -- a 6.0 s completion, not a 3 s one.
-    max_tokens = 128,
+    -- 5.6 s of decode at the 45.4 tok/s §8.3.1 measures at this context, and
+    -- 5.6 of the 7.1 s cold submit. This is the expensive knob, not the
+    -- budget. Measure decode before raising it on other hardware: it does NOT
+    -- scale with prefill, and §8.3.1's step model is what predicts the cost.
+    max_tokens = 256,
     -- extra stop strings appended to the dialect's own
     stop = {},
   },
 
   -- prompt budget --------------------------------------------------------
-  -- Every value here is derived in §8.3 from the CPU baseline of §8.3.1.
-  -- Against a remote GPU server use the measured tier in §8.3.4 instead:
-  -- total_tokens 3072, fim.max_tokens 256, bytes_per_token 4.07, reserve
-  -- unchanged.
+  -- Every value here is derived in §8.3 from the measurements in §8.3.1.
+  -- §8.3.4's remote server derives the same numbers independently, so this
+  -- table serves both. Re-derive on other hardware per §8.3.4's procedure, and
+  -- read §8.3.8 first: two settings on this machine were each worth more than
+  -- a hardware change.
   budget = {
-    total_tokens = 1024,         -- ceiling for prompt + completion; §8.3.2
-    bytes_per_token = 3.9,       -- measured on Lua source, see §8.3.1
-                                 -- 4.07 exactly via llama.cpp /tokenize; §8.3.5
+    total_tokens = 3072,         -- ceiling for prompt + completion; §8.3.2
+                                 -- 3072 not 4096: the server window is 4096
+                                 -- for prompt AND completion (§8.3.7)
+    bytes_per_token = 4.07,      -- exact via /tokenize over this repo's Lua;
+                                 -- §8.3.5, and reconciled per submit
     -- share of the remaining budget each region may claim; the spend/trim/
     -- donate order is §8.3.6's (code → context → notes), not this table's.
-    -- Derived in §8.3.3 so that reserve.code fits §6.2's 60-line whole-file
-    -- case exactly; the same ratios hold at §8.3.4's measured remote budget.
+    -- Derived in §8.3.3 against `total_tokens - fim.max_tokens` = 2816, so
+    -- code 1549, context 845, notes 422.
     reserve = { notes = 0.15, context = 0.30, code = 0.55 },
   },
 
@@ -83,35 +81,37 @@ local defaults = {
     whole_file = {
       enabled = true,
       max_lines = 60,            -- "a standard page"; see §6.2 for the derivation
+                                 -- 150 is affordable at this budget (§8.3.3);
+                                 -- 60 stays a context-quality choice
       -- must not exceed reserve.code expressed in bytes, or the whole-file
       -- rung emits a payload the budget will immediately trim: §8.3.3
-      max_bytes = 1920,          -- guards minified / very-long-line files
-                                 -- 6144 at the §8.3.4 remote tier
+      max_bytes = 6144,          -- guards minified / very-long-line files
+                                 -- 1549 tok x 4.07 B/tok = 6304, rounded down
     },
 
     -- The import/include block, prepended to the slice when the whole file
     -- did not fit. See §6.8.
     imports = {
       enabled = true,
-      max_lines = 20,            -- elided with a marker beyond this; §8.3.3
-                                 -- 40 at the §8.3.4 remote tier
+      max_lines = 40,            -- elided with a marker beyond this; §8.3.3
+                                 -- 308 tokens, well under §8.3.6's
+                                 -- half-reserve drop rule (774)
     },
 
     unit = "function",           -- "function" | "lines"
-    -- 28+12 rather than 40+20 so that slice + import block together stay
-    -- inside reserve.code at the default budget; see §8.3.3
-    lines_before = 28,           -- used when unit == "lines"
-    lines_after = 12,
+    -- 40+20 is 462 tokens; with the import block, 770 of reserve.code's 1549,
+    -- so half the reserve is still free. See §8.3.3.
+    lines_before = 40,           -- used when unit == "lines"
+    lines_after = 20,
     include_doc_comments = true, -- [R§11.3]
   },
 
   -- what goes in R2 ------------------------------------------------------
   context = {
     source = "lsp",              -- "lsp" | "treesitter" | "off"
-    -- a filtered stub line costs ~15 tokens, and reserve.context is 269
-    -- tokens at the default budget: §8.3.3. Raise to 40 at the §8.3.4 remote
-    -- tier, where reserve.context is 845 and 40 stubs cost 600.
-    max_symbols = 16,
+    -- a filtered stub line costs ~15 tokens and reserve.context is 845, so
+    -- this is 600 tokens and leaves 245 for consumers below: §8.3.3
+    max_symbols = 40,
     lsp_timeout = 1500,          -- ms; a slow server must never block a refresh
     kinds = {                    -- SymbolKind names to keep; see §7.1
       "Function", "Method", "Class", "Struct", "Interface", "Constructor", "Field",
@@ -128,10 +128,10 @@ local defaults = {
     consumers = {
       enabled = true,
       -- call sites, not callers. A widened site is 1-3 lines ~= 10-30 tokens,
-      -- so 3 is 11-33% of reserve.context (269) at the default budget; it is
-      -- taken from ranked stubs, which is why it is not folded into
-      -- max_symbols. 6 at the §8.3.4 remote tier, with max_symbols at 40.
-      max = 3,
+      -- so 6 is 60-180 tokens of the 245 max_symbols leaves; it is taken from
+      -- ranked stubs, which is why it is not folded into max_symbols. A tight
+      -- fit, and §8.3.6 trims consumers before the last stubs. §8.3.3.
+      max = 6,
       -- widen cap for the bracket-balance fallback, used only when no
       -- treesitter parser exists for the *caller's* filetype
       max_lines = 3,
@@ -175,7 +175,6 @@ Validation (extend the existing `pcall` block; `vim.validate` per leaf):
 | `api_key_env` | string, non-empty |
 | `tls.cacert` | string, optional, and **`filereadable()`** — a mistyped path must fail at `setup()`, not as curl exit 77 per request |
 | `tls.insecure` | boolean; warn when set together with `tls.cacert`, since the skip wins |
-| `transport` | one of `auto`/`openai`/`ollama_raw` |
 | `fim.dialect` | one of the known keys, or a table with all five keys of §8.1 |
 | `fim.max_tokens` | integer ≥ 1, **and < `budget.total_tokens`** — §8.3 spends `total_tokens - max_tokens` on the prompt, so an equal or larger value leaves no prompt at all |
 | `budget.total_tokens` | integer ≥ 512 — the smallest budget in which §6.2's 24-line rung (185 tokens) plus a handful of stubs still fits under §8.3.3's split |

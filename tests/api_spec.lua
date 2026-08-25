@@ -90,7 +90,7 @@ describe("parse_completion", function()
 
     assert.is_nil(out)
     assert.is_truthy(err:find("120 tokens", 1, true))
-    assert.is_truthy(err:find("thinking model", 1, true))
+    assert.is_truthy(err:find("stop strings", 1, true))
   end)
 
   it("still accepts whitespace, which is a real completion", function()

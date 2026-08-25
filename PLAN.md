@@ -19,9 +19,24 @@ Section numbers (`§1`–`§12`) are unchanged, so every `[R§n]` citation from
 ## Provenance of these facts
 
 Measured on this machine, 2026-08-21: NVIM v0.12.4, `$VIMRUNTIME` =
-`/usr/share/nvim/runtime`, 31 plugins under `~/.local/share/nvim/lazy/`, ollama
-0.32.5 on `:11434`, `lua-language-server` via mason. Core and third-party line
-numbers were re-resolved against disk on that date.
+`/usr/share/nvim/runtime`, 31 plugins under `~/.local/share/nvim/lazy/`,
+`lua-language-server` via mason. Core and third-party line numbers were
+re-resolved against disk on that date.
+
+**Machine facts re-checked 2026-08-25, and one of them was wrong.** The host is
+an **Intel i7-12700H (14C/20T) with an RTX 3050 Ti Mobile, 4 GB**, alongside the
+Iris Xe iGPU. `IMPLEMENTATION.md` described it as a GPU-less i7-1165G7, and every
+inference figure in that document was read as a CPU-only figure on that basis.
+Those figures have been replaced by measurements of the machine as it actually
+is; the correction and what it cost are in `IMPLEMENTATION.md` §8.3.8.
+
+Also changed since 2026-08-21: 32 plugins under `~/.local/share/nvim/lazy/`, and
+**`llama-server` serves `:8080`** — llama.cpp build 10612, `llama serve` with
+`Qwen2.5-Coder-3B-Instruct` Q6_K, which is the port `base_url` already defaults
+to. It is the only model server the plan targets. NVIM v0.12.4 and the mason
+`lua-language-server` are unchanged. Nothing in §1-§12 below turns on the model
+server, so no research section is affected; the transport is `IMPLEMENTATION.md`
+§9 and the timings §8.3.1.
 
 Two caveats about scope:
 

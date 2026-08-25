@@ -59,33 +59,28 @@ irrelevant for the files it covers:
 
 **Deriving the default.** Measured over 41 real Lua files (this repo plus the
 user's Neovim config): median 17 lines, mean 35, p90 79, and **~30 bytes/line**.
-At §8.3.1's measured 3.9 bytes/token that is ~7.7 tokens per line, so — against
-`reserve.code` = **493 tokens** at the default budget (§8.3.3):
+At §8.3.5's measured 4.07 bytes/token that is ~7.4 tokens per line, so — against
+`reserve.code` = **1549 tokens** (§8.3.3):
 
-| Threshold | ≈ bytes | ≈ tokens | share of `reserve.code` (493) | corpus covered |
+| Threshold | ≈ bytes | ≈ tokens | share of `reserve.code` (1549) | corpus covered |
 | --- | --- | --- | --- | --- |
-| 24 lines | 720 | 185 | 38% | 54% |
-| **60 lines** | **1800** | **462** | **94%** | **78%** |
-| 80 lines | 2400 | 615 | 125% | 90% |
-| 150 lines | 4500 | 1154 | 234% | 98% |
+| 24 lines | 720 | 177 | 11% | 54% |
+| **60 lines** | **1800** | **442** | **29%** | **78%** |
+| 80 lines | 2400 | 590 | 38% | 90% |
+| 150 lines | 4500 | 1106 | 71% | 98% |
 
-60 lines is the default: it is "a standard page" in the typesetting sense, it
-covers most of a real corpus, and it is the **largest rung that still fits inside
-`reserve.code`** on the §8.3.1 baseline. That the fit is 94% rather than 33% is
-the whole difference between this budget and the 4096-token one it replaced —
-here the ladder is genuinely bounded by the budget, and 80 lines would already
-overflow it.
+**Every rung fits**, so the threshold is a context-quality choice rather than a
+budget one. 60 lines is the default because it is "a standard page" in the
+typesetting sense and covers most of a real corpus, not because 80 would
+overflow. Raising it to 150 is affordable and buys the last 20% of the corpus at
+2.5x the tokens, which is the trade to weigh — §8.3.2's quality ceiling is the
+argument against, not the budget.
 
 This rung needs no headroom for anything else: the whole-file path skips the
 import block entirely (the imports are already in the payload), so it is the one
-rung allowed to spend the code reserve down to the last token.
-
-**On §8.3.4's measured remote tier, `reserve.code` is 1549 tokens and every rung
-in the table fits** — the 150-line rung is 1106 tokens, 71% of the reserve. There,
-80 or even 150 lines becomes a free choice governed by context quality rather than
-by the budget, and §8.3.4 raises `whole_file.max_bytes` to 6144 accordingly. Note
-that tier measures **4.07** bytes/token rather than 3.9 (exactly, via llama.cpp's
-`/tokenize`), so a line is ~7.4 tokens there, not 7.7.
+rung allowed to spend the code reserve down to the last token. `max_bytes` is set
+to 6144, which is `reserve.code` expressed in bytes (1549 × 4.07 = 6304, rounded
+down).
 
 **Both limits must pass, and `max_bytes` is the real guard.** A 60-line file of
 minified JavaScript, generated code, or long data literals can be hundreds of
@@ -584,10 +579,10 @@ alone would exceed half the code reserve, drop them entirely and say so: a
 half-truncated import block is actively misleading, because the model will read
 the absence of an import as "that name is not available".
 
-Concretely at the default budget: `reserve.code` is 493 tokens, so the drop
-threshold is 246, and a 20-line block costs ~154 — it survives. This is only true
-because §8.3.3 retuned `imports.max_lines` from 40 to 20; at 40 lines the block
-costs ~308 tokens, clears the threshold on every submit, and `imports.enabled`
-becomes a silent no-op on the non-whole-file path. If you raise the slice or the
-import limit, re-check this inequality.
+Concretely: `reserve.code` is 1549 tokens, so the drop threshold is 774, and a
+40-line block costs ~296 — it survives with room. This inequality is the reason
+`imports.max_lines` is a budget number and not a taste one: at a tighter budget
+the same 40-line block clears the threshold on every submit and `imports.enabled`
+becomes a silent no-op on the non-whole-file path. If you lower `total_tokens` or
+raise the import limit, re-check it.
 

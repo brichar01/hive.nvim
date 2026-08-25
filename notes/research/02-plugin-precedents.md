@@ -103,12 +103,11 @@ Retired: hive's budget is token-based and prompt-shaped, not a buffer-scanning
 budget (`IMPLEMENTATION.md` §8.3), and its body is one `stdin` string.
 
 One correction to that framing, from measurement: hive's budget is token-shaped
-but **latency-bound**. `IMPLEMENTATION.md` §8.3.1 measures 59–88 tok/s of prefill
-on this CPU-only machine, so the ceiling is set by how long a submit may take,
-not by what the model can hold. Those figures were re-measured on a GPU server
-2026-08-24 (§8.3.4) and the framing survives: prefill goes ~20x faster there but
-decode only ~2.4x, so the budget stays latency-bound — the latency just relocates
-from the prompt to the completion, which is now ~75% of a cold submit.
+but **latency-bound**, and the latency is in the *completion*, not the prompt.
+`IMPLEMENTATION.md` §8.3.1 measures ~1900 tok/s of prefill against 46 tok/s of
+decode on the same server, so a 2816-token prompt costs 1.5 s and 256 generated
+tokens cost 5.6 s. The ceiling is set by how long a submit may take, not by what
+the model can hold, and the knob that sets it is `fim.max_tokens`.
 
 ### 8.10 Correctness checklist
 
@@ -137,9 +136,9 @@ review checklist, not prose.
   turned into "could not find executable in PATH" (mason `process.lua:227`).
 - **No silent caps:** if a budget drops content, say so. Silent truncation reads
   as "covered everything" when it didn't. Note that hive is not the only party
-  that can truncate: ollama silently drops the *head* of an over-long prompt,
-  taking the FIM sentinel with it, and returns HTTP 200
-  (`IMPLEMENTATION.md` §8.3.7).
+  that can truncate: a prompt that fits the server's window with a completion
+  that does not returns HTTP 200 and a stop reason no different from a normal
+  cap (`IMPLEMENTATION.md` §8.3.7).
 - **Hygiene:** large payloads kept off argv via stdin; env redacted before
   logging (mason `process.lua:155`).
 

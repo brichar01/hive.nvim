@@ -11,8 +11,9 @@ the split; a `§n` cross-reference still resolves via the section map in the ind
 Extend `lua/hive/health.lua`. Each is a distinct `health.ok`/`warn`/`error`:
 
 1. `curl` executable — existing.
-2. `base_url` reachable — existing, but switch to the probe of §9.1 so it also
-   reports the detected transport.
+2. `base_url` reachable — existing, but switch to `GET /props`, which answers
+   in one round trip with the model alias, the per-slot window and the slot
+   count. Checks 8 and 2c both read it, so it is one request, not three.
 2b. **How the server is addressed.** Whether `base_url` is loopback or remote;
    for a remote one, whether the connection is plaintext or verified TLS, and
    whether a credential is configured and reachable without the argv (§9.6).
@@ -24,14 +25,15 @@ Extend `lua/hive/health.lua`. Each is a distinct `health.ok`/`warn`/`error`:
    is absent. `model` defaults to a placeholder and every server names its models
    differently, so this drifts precisely when the server moves (§9.6). Without it
    the symptom is an HTTP 400 at submit time.
-3. **Thinking-model trap.** Send a 16-token completion through the configured
-   transport. If `text == ""` and the token count is non-zero, `health.error`
-   with the §9.4 hint. This is the check that turns a mystifying silence into a
-   one-line diagnosis.
+3. **Empty-completion trap.** Send a 16-token completion. If `text == ""` and
+   the token count is non-zero, `health.error` with the §9.4 hint. This is the
+   check that turns a mystifying silence into a one-line diagnosis, and the
+   reachable cause here is a `fim.stop` string that matches at position 0.
 4. **FIM support.** Send a minimal FIM prompt for the configured dialect and
-   report whether the response is non-empty. Also probe `suffix` and report
-   `"does not support insert"` as information, not an error — it tells the user
-   their model has no FIM template.
+   report whether the response is non-empty. Check that the dialect's sentinels
+   tokenize to **one token each** via `POST /tokenize` (§9.7): a model whose
+   vocabulary lacks them takes the sentinels as literal text and returns
+   confident nonsense, which is the failure that looks least like one.
 5. **Query supply.** For the target filetype, report
    `vim.treesitter.query.get(vim.treesitter.language.get_lang(ft), "locals") ~= nil`
    (§4.3's mapping — the raw filetype misses `typescriptreact` and friends) and
@@ -58,22 +60,28 @@ Extend `lua/hive/health.lua`. Each is a distinct `health.ok`/`warn`/`error`:
    and keeps its stubs. Absent call hierarchy is `info`, not a warning: it is the
    measured state on `lua_ls`, hive does not use it, and reporting it as a
    problem would send users hunting for a server that fixes nothing.
-8. **Effective context window.** `GET /api/ps` for the loaded model and compare
-   its `context_length` against `budget.total_tokens` (§8.3.7). `health.error` if
-   the budget exceeds it, naming `num_ctx` on `ollama_raw` and
-   `OLLAMA_CONTEXT_LENGTH` on `openai`. Do **not** read `/api/show` for this — it
-   reports the architectural maximum, not the loaded window. Report the two side
-   by side, since the gap between them (8192 loaded vs 32768 architectural here)
-   is the thing users misread. **`/api/ps` is ollama-only**: against a remote
-   `llama-server` or vLLM this check cannot run, and §8.3.7's silent
-   head-truncation becomes undetectable. Report it as `info` naming the
-   server-side flag (`--ctx-size`, `--max-model-len`) rather than silently
-   skipping — see §9.6's open gap.
-9. **Prefill cost.** Report the measured prefill rate from the last submit
-   (`prompt_eval_count / prompt_eval_duration`) alongside `budget.total_tokens`,
-   as `~896 prompt tokens ≈ 12 s at 75 tok/s`. On the §8.3.1 CPU baseline this is
-   the number that explains a slow submit, and on a new machine it is the first
-   input to re-deriving the budget per §8.3.4.
+8. **Effective context window.** Compare `budget.total_tokens` against
+   `default_generation_settings.n_ctx` from check 2's `/props` response
+   (§8.3.7). `health.error` when the budget exceeds it, naming `--ctx-size` and
+   `--parallel` — the window is `--ctx-size` divided by `--parallel`, so a user
+   who raised one and not the other is the case this catches. Do **not** read
+   `n_ctx_train` for this: it is the architectural maximum, and here it is
+   32768 against a 4096 window. Report the two side by side, since the gap
+   between them is what users misread. Against a server with no `/props` — vLLM,
+   LM Studio — degrade to `info` naming `--max-model-len` rather than passing
+   silently.
+8b. **Completion room inside the window.** `health.warn` when
+   `total_tokens` equals the window exactly, or when
+   `total_tokens - fim.max_tokens` leaves less than `fim.max_tokens` of slack.
+   This is §8.3.7's second failure mode, the one that returns HTTP 200 with a
+   truncated completion, and it is cheaper to refuse at `setup()` than to detect
+   per response.
+9. **Decode cost.** Report the measured decode rate from the last submit
+   (`usage.completion_tokens` over the elapsed generation time) alongside
+   `fim.max_tokens`, as `~256 tokens ≈ 5.6 s at 45 tok/s`. Decode is what makes a
+   submit slow (§8.3.2), so this is the number that explains one, and on a new
+   machine it is the first input to re-deriving the budget per §8.3.4. Report the
+   prefill rate beside it, and note that neither predicts the other.
 
 ---
 
@@ -92,7 +100,7 @@ nothing answers, and that pattern extends.
 | `tests/imports_spec.lua` | §6.8 | Strategy A per language; the `export_statement`-with-`source` discriminator (re-export in, `export function` out); `preproc_include`'s `end_col == 0` slice not swallowing the next line; strategy B's prologue boundary landing before an **empty-bodied** Lua function rather than after it; the elision marker suppressed when nothing is elided. |
 | `tests/discover_spec.lua` | §7 | Synthetic `documentSymbol` payloads, including the noisy lua_ls shape from §7.1, asserting the filter drops `Package`/`String` and body-less `Variable`s while keeping a callable `Variable` (tsgo's arrow-const, §7.1). No live LSP. |
 | `tests/consumers_spec.lua` | §7.4 | Synthetic `references` payloads, no live LSP — the four-server divergence is measured by `scripts/measure/consumers.lua`, not asserted here. Must cover: a result inside R3's own slice is dropped (the recursive-call case); an import line is dropped; a call whose arguments wrap is widened past its start line, both via a parser and via the bracket-balance fallback; a result in a **loaded, modified** buffer is read from the buffer and not from disk; and — the one that guards §8.3.1 — two runs over the same results shuffled render byte-identically, because §7.4 step 3 sorts by `(uri, line, character)`. Zero consumers renders as nothing, never as an error. |
-| `tests/prompt_spec.lua` | §8 | Dialect rendering byte-for-byte; budget trimming order; assert the hole is never trimmed. Assert `reserve` sums to 1.0 and that `code.whole_file.max_bytes`, the 28+12 slice and the 20-line import block all fit inside `reserve.code` at the default budget (§8.3.3) — these are the couplings that silently rot when one default is tuned alone. Assert R1/R2 rendering is byte-identical across two submits with unchanged inputs, since §8.3.1's 6x prefix-cache win depends on it. |
+| `tests/prompt_spec.lua` | §8 | Dialect rendering byte-for-byte; budget trimming order; assert the hole is never trimmed. Assert `reserve` sums to 1.0 and that `code.whole_file.max_bytes`, the 40+20 slice and the 40-line import block all fit inside `reserve.code` (§8.3.3), and that the import block stays under half of it — these are the couplings that silently rot when one default is tuned alone. Assert `fim.max_tokens` leaves the completion room §8.3.7 requires inside the server window. Assert R1/R2 rendering is byte-identical across two submits with unchanged inputs, since §8.3.1's prefix-cache win depends on it. |
 | `tests/apply_spec.lua` | §10 | Provenance gravity at both boundaries; `overlap = true`; `invalidate` on deletion and restoration on undo; **one undo per accept**; reverse-sorted hunk application. |
 | `tests/api_spec.lua` (edit) | §9.4 | Add: empty `text` with non-zero `completion_tokens` returns an error, not success. Whitespace-only text is still a success — the check is `== ""`, not `vim.trim(...) == ""`. |
 | `tests/remote_spec.lua` | §9.6 | `connect_timeout` reaches the argv as seconds and is absent when unset; a blackholed host (TEST-NET `203.0.113.1`) returns well inside `timeout`; `cacert`/`insecure` reach curl; an unreadable `cacert` is rejected at `setup()`; the token resolves config-over-env, accepts a function, and — where curl supports `--expand-header` — **appears nowhere in `build_args`' output**, which is the assertion the whole indirection exists for. |

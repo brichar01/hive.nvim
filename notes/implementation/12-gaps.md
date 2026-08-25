@@ -12,22 +12,23 @@ Recorded because the review of `PLAN.md` turned on them.
 
 ### 16.1 What the research did not cover, and had to be measured
 
-1. **The FIM protocol.** `PLAN.md` had nothing on how a fill-in-the-middle request
-   is expressed. Measured in §9.1: on this machine, `/v1/completions` templates
-   the prompt, ignores `think`, and gates `suffix` on the model — so the research's
-   conclusion that hive's `/v1/completions` transport was "the best of the five"
-   was true about *the HTTP body* and silently wrong about *the endpoint*.
-2. **The empty-completion trap.** A thinking model returns HTTP 200,
+1. **The FIM protocol.** `PLAN.md` had nothing on how a fill-in-the-middle
+   request is expressed. The research's conclusion that hive's
+   `/v1/completions` transport was "the best of the five" was a finding about
+   *the HTTP body* and said nothing about *the endpoint*, which is where every
+   FIM decision actually lives: whether the prompt is templated, whether the
+   sentinels survive tokenization, and what stops a generation. §9.1 and §9.7
+   measure all three.
+2. **The empty-completion trap.** A server can return HTTP 200,
    `finish_reason = "length"`, non-zero `completion_tokens`, and `text = ""`.
    Nothing in the research anticipated a successful-looking empty response, and
    `parse_completion` accepts it today.
-3. **Token accounting, and the cost of a token.** No tokenizer endpoint exists on
-   this server, so §8.3.5's bytes/token had to be measured — and re-measured: the
-   original 3.61 was taken through a templating path and the raw figure is 3.9.
-   Much more importantly, the research costed context in *tokens* and never in
-   *seconds*. §8.3.1 measures the latter for the first time: 59–88 tok/s prefill
-   on CPU, which is what actually sets the budget and which invalidated the
-   original 4096 default outright.
+3. **Token accounting, and the cost of a token.** The research costed context in
+   *tokens* and never in *seconds*. §8.3.1 measures the latter for the first
+   time, and the result reorders the whole budget: prefill is nearly free and
+   **decode is 5.6 s of a 7.1 s cold submit**, so `fim.max_tokens` is the
+   expensive knob and `total_tokens` is not. That is what invalidated the
+   original 4096 default, and it is not visible from a token count.
 4. **Region boundaries.** §4.1's failure — two boundary extmarks collapsing when
    the region between them is replaced — is a new result. `PLAN.md` §12 covered
    extmarks over *text*, never as *structural* delimiters.
@@ -44,31 +45,30 @@ Recorded because the review of `PLAN.md` turned on them.
    the bytes above R3 changed. Nothing in the research or in the first draft of
    this plan treated R1/R2 stability as load-bearing, and nothing currently
    enforces it.
-9. **`num_ctx` is a second ceiling with no error path — on ollama.** §8.3.7. The
-   research costed the prompt against hive's own budget and never against the
-   server's window; ollama's 4096 default truncates from the head, which removes
-   the FIM sentinel and returns HTTP 200. Measured 2026-08-24, `llama-server`
-   instead returns a typed HTTP 400 carrying both `n_prompt_tokens` and `n_ctx`,
-   and exposes the window on the OpenAI path — so the hazard is ollama's, not the
-   design's, and the check is enforceable rather than merely documentable.
-10. **The measurements were laptop-CPU measurements — §8.3.4 has now been re-run
-    on a GPU box, twice.** Every latency figure in §8.3.1 still comes from a
-    machine with no discrete GPU (`size_vram=0`), and the shipped defaults still
-    follow from it. What changed 2026-08-24 is that the alternate tier is measured
-    rather than estimated: prefill ~1450 tok/s (**~20x** the baseline), decode
-    ~43 tok/s (**~2.4x**).
+9. **The server's window is a second ceiling the research never costed.**
+   §8.3.7. The research costed the prompt against hive's own budget and never
+   against the window the server enforces. Measured 2026-08-25, `llama-server`
+   refuses an over-long prompt with a typed HTTP 400 carrying both
+   `n_prompt_tokens` and `n_ctx`, and exposes the window on `/props`, so the
+   check is enforceable rather than merely documentable. The residual hazard is
+   the *other* overrun: a prompt that fits with a completion that does not
+   returns HTTP 200 and a `stop_type` no different from a normal cap, which is
+   why §9.4 compares the token counts.
+10. **A latency budget that folds prefill and decode into one number cannot be
+    tuned.** The first budget in this plan assumed one factor covers both, so
+    raising `fim.max_tokens` looked free. The two move together in direction but
+    not in magnitude, because they are bound by different resources: decode reads
+    the whole weight set **once per token** and is bandwidth-bound, while prefill
+    reads it once per **batch of hundreds** and is compute-bound. §8.3.1 and
+    §8.3.4 measure both separately on two different servers, and on both of them
+    decode is what makes a submit slow: 5.6 s of a 7.1 s cold submit here, 6.0 s
+    of 8.0 s there. `fim.max_tokens = 256` rests on that measurement, not on an
+    inference from the prefill figure.
 
-    **The estimate's error was assuming one factor covers both.** It took a GPU to
-    speed up prefill and decode alike, so raising `fim.max_tokens` to 256 looked
-    free. The two move together in direction but not in magnitude, because they
-    are bound by different resources: decode reads the whole weight set **once per
-    token** and is bandwidth-bound, while prefill reads it once per **batch of
-    hundreds** and is compute-bound. A GPU brings far more compute than bandwidth
-    over a CPU, so prefill gains ~8x more than decode does. A latency budget that
-    folds them into a single tok/s number cannot see this and will mis-tune
-    whichever one it did not measure separately. §8.3.4 now measures both, and
-    `fim.max_tokens = 256` is affordable there — 6.0 s of the ~8.0 s cold submit —
-    but on the measurement, not on the inference.
+    **What is still unmeasured** is the third resource the same mistake hides:
+    §8.3.8 shows a server whose aggregate tok/s looked healthy while a quarter of
+    the weights sat in host memory, and only the decode *step decomposition*
+    exposed it. Any new server needs that run before its numbers are recorded.
 
     The corollary is a measurement rule: an aggregate tok/s figure diagnoses
     nothing. Decode step time is *linear in context*, so fitting it across context
