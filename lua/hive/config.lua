@@ -61,36 +61,15 @@ function M.defaults()
 end
 
 ---Resolve the bearer token from the config value or the environment.
----
---- Returns the token and where it came from, so `hive.api` can decide whether it
---- is able to keep the value off the command line and `:checkhealth` can say so.
 ---@return string|nil token
----@return "config"|"env"|nil source
 function M.resolve_api_key()
-  local configured = config.api_key
-
-  ---@type string|nil
-  local key
-  if type(configured) == "function" then
-    local ok, value = pcall(configured)
-    key = (ok and type(value) == "string") and value or nil
-  elseif type(configured) == "string" then
-    key = configured
-  end
-
-  if key and key ~= "" then
-    return key, "config"
-  end
-
   local env = config.api_key_env
-  if type(env) == "string" and env ~= "" then
-    local value = vim.env[env]
-    if type(value) == "string" and value ~= "" then
-      return value, "env"
-    end
+  local value = vim.env[env]
+  if type(value) == "string" and value ~= "" then
+    return env
   end
 
-  return nil, nil
+  return nil
 end
 
 ---Extend the default options table with the user options

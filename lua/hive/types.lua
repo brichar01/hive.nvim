@@ -60,14 +60,14 @@
 -- lua/hive/curl.lua -----------------------------------------------------------
 
 ---@class Hive.Curl
----@field new_request fun(req: Hive.Curl.Request): string[] build the curl argv for a request
----@field request fun(req: Hive.Curl.Request, callback?: fun(err: string|nil, res: Hive.Curl.Response|nil)): string|nil, Hive.Curl.Response|nil, vim.SystemObj|nil
+---@field new_request fun(): Hive.Curl.RequestBuilder start building a request
+---@field request fun(req: Hive.Curl.Request, callback: fun(err: string|nil, res: Hive.Curl.Response|nil)): vim.SystemObj|nil
 
 -- lua/hive/api.lua ------------------------------------------------------------
 
 ---@class Hive.Api
----@field base_request fun(url: string): Hive.Curl.Request shared credentials, TLS and timeouts
----@field completions_request fun(prompt: string, max_tokens: integer): Hive.Curl.Request
+---@field base_request fun(url: string): Hive.Curl.RequestBuilder shared credentials, TLS and timeout
+---@field completions_request fun(prompt: string, max_tokens: integer): Hive.Curl.RequestBuilder
 ---@field parse_completion fun(res: Hive.Curl.Response): string|nil, Hive.Completion|nil
 ---@field completions fun(prompt: string, max_tokens: integer, callback?: fun(err: string|nil, completion: Hive.Completion|nil)): string|nil, Hive.Completion|nil, vim.SystemObj|nil
 ---@field models fun(timeout?: integer): string|nil, string[]|nil model ids advertised by the server

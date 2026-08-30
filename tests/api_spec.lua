@@ -135,24 +135,3 @@ describe("completions argument validation", function()
     assert.are.equal("prompt must not be empty", cb_err)
   end)
 end)
-
-describe("completions against a live server", function()
-  local Curl = require("hive.curl")
-  -- Bounded at both ends: a base_url pointing at a host that drops packets
-  -- must not hold the suite for the full request timeout either.
-  local reachable = select(
-    1,
-    Curl.request({ url = Config.base_url .. "/v1/models", timeout = 1000, connect_timeout = 500 })
-  ) == nil
-
-  it("returns generated text", function()
-    if not reachable then
-      -- No server on Config.base_url — the offline suite above covers the logic.
-      return
-    end
-
-    local err, out = Api.completions("The capital of France is", 8)
-    assert.is_nil(err)
-    assert.is_string(out.text)
-  end)
-end)

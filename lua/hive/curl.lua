@@ -22,19 +22,6 @@ local CURL_ERRORS = {
   [77] = "could not read the TLS CA certificate bundle",
 }
 
-local function format_header(key, value)
-  -- Normalize header name to Title-Case
-  local normalized = key
-    :gsub("(%l)(%w*)", function(first, rest)
-      return first:upper() .. rest:lower()
-    end)
-    :gsub("%-(%w)", function(c)
-      return "-" .. c:upper()
-    end)
-
-  return normalized .. ": " .. value
-end
-
 ---@class Hive.Curl.RequestBuilder
 ---@field url string full request URL
 ---@field method string HTTP verb (default "GET")
@@ -56,7 +43,8 @@ function M.new_request()
   return RequestBuilder.new()
 end
 
--- Breakout, for appending custom flags placed at the end
+-- Breakout, for appending custom (unintended or dangerous)
+-- flags placed at the end
 ---@param name string
 ---@param value string?
 ---@return Hive.Curl.RequestBuilder
@@ -70,6 +58,13 @@ function RequestBuilder:with_opt(name, value)
   if value then
     table.insert(self.argv, value)
   end
+  return self
+end
+
+---@param url string
+---@return Hive.Curl.RequestBuilder
+function RequestBuilder:with_url(url)
+  self.url = url
   return self
 end
 
@@ -97,14 +92,14 @@ function RequestBuilder:with_headers(headers)
   return self
 end
 
----@param headers table<string, string> ENV var to Header mapping
+---@param secrets table<string, string> ENV var to Header mapping
 ---@return Hive.Curl.RequestBuilder
-function RequestBuilder:with_secrets(headers)
+function RequestBuilder:with_secrets(secrets)
   if not self.secrets then
     self.secrets = {}
   end
-  for k, v in pairs(headers) do
-    self.headers[k] = v
+  for k, v in pairs(secrets) do
+    self.secrets[k] = v
   end
   return self
 end
@@ -143,7 +138,7 @@ function RequestBuilder:build()
   if self.headers then
     for k, v in pairs(self.headers) do
       table.insert(args, "--header")
-      table.insert(args, format_header(k, v))
+      table.insert(args, ("%s: %s"):format(k, v))
     end
   end
 
@@ -159,11 +154,11 @@ function RequestBuilder:build()
   end
 
   if self.secrets then
-    for env, secret_header in self.secrets do
+    for env, secret_fmt in self.secrets do
       table.insert(args, "--variable")
       table.insert(args, ("%%%s"):format(env))
       table.insert(args, "--expand-header")
-      table.insert(args, ("%s: {{%s}}"):format(secret_header, env))
+      table.insert(args, secret_fmt:format(env))
     end
   end
 

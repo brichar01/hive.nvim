@@ -1,15 +1,11 @@
 --- OpenAI-compatible endpoint bindings.
 ---
---- Only `/v1/completions` is implemented. Headers, model, credentials and base
---- URL come from `hive.config`; callers supply nothing but the prompt and a
---- token budget.
+--- `/v1/completions` and `/v1/models` are implemented. Headers, model,
+--- credentials and base URL come from `hive.config`; callers supply nothing but
+--- the prompt and a token budget.
 
 ---@class Hive.Api
 local M = {}
-
--- The curl variable a bearer token is passed through. Any name works; it exists
--- so the token reaches curl via the environment instead of the argv.
-local TOKEN_VAR = "HIVE_TOKEN"
 
 ---@class Hive.Completion
 ---@field text string the generated text
@@ -41,44 +37,61 @@ local function error_message(status, body)
   return ("HTTP %d: %s"):format(status, message)
 end
 
----Build the fields every request shares: credentials, TLS and the timeouts.
+---Run a built request to completion, pumping the event loop while it is in
+---flight.
+---
+--- `hive.curl` only speaks callbacks. The two blocking entry points here are
+--- for `:checkhealth` and for scripts driving hive from `nvim -l`, where there
+--- is no editor to keep responsive.
+---@param req Hive.Curl.Request
+---@return string|nil err
+---@return Hive.Curl.Response|nil res
+local function await(req)
+  local Curl = require("hive.curl")
+
+  local done, request_err, res = false, nil, nil
+  Curl.request(req, function(err, result)
+    done, request_err, res = true, err, result
+  end)
+
+  -- `build()` already pads the process budget past curl's own deadline; a
+  -- little more on top keeps the wait from firing before curl gives up.
+  local budget = (req.opts.timeout or 60000) + 1000
+  local waited = vim.wait(budget, function()
+    return done
+  end, 20)
+
+  if not waited then
+    return ("request did not finish within %dms"):format(budget)
+  end
+  return request_err, res
+end
+
+---Build the request every endpoint shares: credentials, TLS and the timeout.
 ---
 --- Exposed so `hive.health` probes the server exactly the way a real request
 --- would, rather than reaching a server the completion path could not.
 ---@param url string
----@return Hive.Curl.Request
+---@return Hive.Curl.RequestBuilder
 function M.base_request(url)
   local Config = require("hive.config")
   local Curl = require("hive.curl")
 
-  ---@type Hive.Curl.Request
-  local req = {
-    url = url,
-    headers = vim.deepcopy(Config.headers),
-    timeout = Config.timeout,
-    connect_timeout = Config.connect_timeout,
-    cacert = Config.tls.cacert,
-    insecure = Config.tls.insecure,
-  }
+  -- stylua: ignore
+  local req = Curl.new_request()
+                  :with_url(url)
+                  :with_timeout(Config.timeout)
+                  :with_headers(Config.headers)
 
   local token = Config.resolve_api_key()
   if token then
-    if Curl.supports_expand() then
-      -- curl >= 8.3: the token is read from curl's environment, so it never
-      -- appears in `/proc/<pid>/cmdline` for the life of the request.
-      req.secrets = { [TOKEN_VAR] = token }
-      req.expand_headers = { ["Authorization"] = ("Bearer {{%s}}"):format(TOKEN_VAR) }
-    else
-      -- Older curl has no way to indirect through the environment. The header
-      -- goes on the argv; `:checkhealth hive` reports this.
-      req.headers["Authorization"] = "Bearer " .. token
-    end
+    req:with_secrets({ [token] = "Authorization: Bearer {{%s}}" })
   end
 
   return req
 end
 
----Turn a raw HTTP response into a completion. Exposed for testing.
+---Turn a raw HTTP response into a completion
 ---@param res Hive.Curl.Response
 ---@return string|nil err
 ---@return Hive.Completion|nil completion
@@ -124,18 +137,18 @@ end
 ---Build the request for `POST /v1/completions`. Exposed for testing.
 ---@param prompt string
 ---@param max_tokens integer
----@return Hive.Curl.Request
+---@return Hive.Curl.RequestBuilder
 function M.completions_request(prompt, max_tokens)
   local Config = require("hive.config")
 
   local req = M.base_request(Config.base_url .. "/v1/completions")
-  req.method = "POST"
-  req.body = vim.json.encode({
+  req:with_method("POST")
+  req:with_body(vim.json.encode({
     model = Config.model,
     prompt = prompt,
     max_tokens = max_tokens,
     stream = false,
-  })
+  }))
 
   return req
 end
@@ -186,17 +199,18 @@ function M.completions(prompt, max_tokens, callback)
   end
 
   local Curl = require("hive.curl")
-  local req = M.completions_request(prompt, max_tokens)
+  local req = M.completions_request(prompt, max_tokens):build()
+  ---@cast req Hive.Curl.Request
 
   if not callback then
-    local request_err, res = Curl.request(req)
+    local request_err, res = await(req)
     if request_err then
       return request_err
     end
     return M.parse_completion(res --[[@as Hive.Curl.Response]])
   end
 
-  local _, _, obj = Curl.request(req, function(request_err, res)
+  local obj = Curl.request(req, function(request_err, res)
     if request_err then
       return callback(request_err, nil)
     end
@@ -217,14 +231,11 @@ end
 ---@return string[]|nil models
 function M.models(timeout)
   local Config = require("hive.config")
-  local Curl = require("hive.curl")
 
-  local req = M.base_request(Config.base_url .. "/v1/models")
-  req.timeout = timeout or 5000
-  -- Never let the connect budget outlive the request budget it sits inside.
-  req.connect_timeout = math.min(Config.connect_timeout, req.timeout)
+  local req = M.base_request(Config.base_url .. "/v1/models"):with_timeout(timeout or 5000):build()
+  ---@cast req Hive.Curl.Request
 
-  local err, res = Curl.request(req)
+  local err, res = await(req)
   if err then
     return err
   end
