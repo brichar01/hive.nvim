@@ -2,7 +2,6 @@
 ---@field base_url string
 ---@field model string
 ---@field timeout integer
----@field connect_timeout integer
 ---@field headers table<string, string>
 ---@field api_key string|fun(): string|nil
 ---@field api_key_env string
@@ -18,12 +17,6 @@ local defaults = {
   base_url = "http://localhost:8080",
   model = "default",
   timeout = 60000, -- ms, passed to curl --max-time and vim.system
-
-  -- Bounds the connect phase alone. A host that drops packets rather than
-  -- refusing the connection — asleep, or behind a firewall that DROPs — would
-  -- otherwise stall for the whole `timeout`. Loopback cannot fail that way,
-  -- which is why this only matters once the server is off-box.
-  connect_timeout = 3000,
 
   headers = {
     ["Content-Type"] = "application/json",

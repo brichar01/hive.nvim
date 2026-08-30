@@ -1,17 +1,11 @@
 --- Thin transport layer over the `curl` binary, driven by |vim.system()|.
----
---- This module knows nothing about OpenAI — it speaks HTTP and returns raw
---- status/body pairs. See `hive.api` for the endpoint bindings.
 
 ---@class Hive.Curl
 local M = {}
 
--- curl writes the body to stdout, then `--write-out` appends this marker
--- followed by the HTTP status code. Splitting on the marker keeps the body
--- byte-exact even when it ends in newlines.
 local MARKER = "\n__hive_status__:"
 
--- Exit codes worth translating; anything else falls back to stderr.
+-- Common curl errors
 ---@type table<integer, string>
 local CURL_ERRORS = {
   [3] = "malformed URL",
@@ -28,135 +22,158 @@ local CURL_ERRORS = {
   [77] = "could not read the TLS CA certificate bundle",
 }
 
----@class Hive.Curl.Request
+local function format_header(key, value)
+  -- Normalize header name to Title-Case
+  local normalized = key
+    :gsub("(%l)(%w*)", function(first, rest)
+      return first:upper() .. rest:lower()
+    end)
+    :gsub("%-(%w)", function(c)
+      return "-" .. c:upper()
+    end)
+
+  return normalized .. ": " .. value
+end
+
+---@class Hive.Curl.RequestBuilder
 ---@field url string full request URL
----@field method? string HTTP verb (default "GET")
+---@field method string HTTP verb (default "GET")
 ---@field headers? table<string, string> request headers, placed on the argv
 ---@field body? string raw request body, sent on curl's stdin
 ---@field timeout? integer milliseconds for the whole request (default 60000)
----@field connect_timeout? integer milliseconds allowed for the connect alone
----@field cacert? string path to a CA bundle for a privately-signed server
----@field insecure? boolean skip TLS verification entirely
----@field secrets? table<string, string> env var name -> value, exported to curl only
----@field expand_headers? table<string, string> header name -> template referencing `{{VAR}}`
+---@field secrets? table<string, string> env var name and heaer type, bypasses nvim
+local RequestBuilder = {}
+RequestBuilder.__index = RequestBuilder
 
----@class Hive.Curl.Response
----@field status integer HTTP status code
----@field body string raw response body
-
----Parsed `curl --version`, resolved once per session.
----@type integer[]|nil
-local version
-
----Return curl's version as `{ major, minor, patch }`, or nil if it cannot be read
----@return integer[]|nil
-function M.version()
-  if version then
-    return version
-  end
-  if vim.fn.executable("curl") ~= 1 then
-    return nil
-  end
-
-  local ok, out = pcall(function()
-    return vim.system({ "curl", "--version" }, { text = true }):wait()
-  end)
-  if not ok or out.code ~= 0 then
-    return nil
-  end
-
-  local major, minor, patch = (out.stdout or ""):match("curl%s+(%d+)%.(%d+)%.(%d+)")
-  if not major then
-    return nil
-  end
-
-  version = { tonumber(major), tonumber(minor), tonumber(patch) }
-  return version
+---@return Hive.Curl.RequestBuilder
+function RequestBuilder.new()
+  local args = { ["url"] = nil, ["method"] = "GET", ["timeout"] = 60000 }
+  return setmetatable(args, RequestBuilder)
 end
 
----Whether this curl understands `--variable` / `--expand-header` (curl >= 8.3.0).
----
---- Those two options are what keep a bearer token off the process command line:
---- curl reads the value from its own environment at request time instead of it
---- being interpolated into an argv that every other process on the box can read
---- through `/proc`.
----@return boolean
-function M.supports_expand()
-  local v = M.version()
-  if not v then
-    return false
-  end
-  return v[1] > 8 or (v[1] == 8 and v[2] >= 3)
+---@return Hive.Curl.RequestBuilder
+function M.new_request()
+  return RequestBuilder.new()
 end
 
----Build the argv for a request. Exposed for testing and debugging.
----@param req Hive.Curl.Request
----@return string[] cmd argv suitable for |vim.system()|
-function M.build_args(req)
-  local timeout = req.timeout or 60000
+-- Breakout, for appending custom flags placed at the end
+---@param name string
+---@param value string?
+---@return Hive.Curl.RequestBuilder
+function RequestBuilder:with_opt(name, value)
+  if not self.argv then
+    self.argv = {}
+  end
 
-  local cmd = {
-    "curl",
-    "--silent", -- no progress meter
-    "--show-error", -- but do report errors on stderr
-    "--location", -- follow redirects; curl drops auth headers across hosts
-    "--request",
-    req.method or "GET",
-    "--url",
-    req.url,
-    "--max-time",
-    tostring(timeout / 1000),
-    "--write-out",
-    MARKER .. "%{http_code}",
+  table.insert(self.argv, name)
+
+  if value then
+    table.insert(self.argv, value)
+  end
+  return self
+end
+
+---@param method "GET"|"POST"|"OPTIONS"
+function RequestBuilder:with_method(method)
+  self["method"] = method
+  return self
+end
+
+---@param timeout integer
+function RequestBuilder:with_timeout(timeout)
+  self["timeout"] = timeout
+  return self
+end
+
+---@param headers table<string, string>
+---@return Hive.Curl.RequestBuilder
+function RequestBuilder:with_headers(headers)
+  if not self.headers then
+    self.headers = {}
+  end
+  for k, v in pairs(headers) do
+    self.headers[k] = v
+  end
+  return self
+end
+
+---@param headers table<string, string> ENV var to Header mapping
+---@return Hive.Curl.RequestBuilder
+function RequestBuilder:with_secrets(headers)
+  if not self.secrets then
+    self.secrets = {}
+  end
+  for k, v in pairs(headers) do
+    self.headers[k] = v
+  end
+  return self
+end
+
+---@param body string? body data/source, nil = pipe from stdin
+---@return Hive.Curl.RequestBuilder
+function RequestBuilder:with_body(body)
+  self["body"] = body or "@-"
+  return self
+end
+
+---@class Hive.Curl.Request
+---@field args string[]
+---@field opts table<string, string>
+
+---@return Hive.Curl.Request|nil
+function RequestBuilder:build()
+  if not self.url then
+    error("No url supplied!!")
+    return nil
+  end
+
+  local args = { "curl", "-sSL" }
+  table.insert(args, "--write-out")
+  table.insert(args, MARKER .. "%{http_code}")
+
+  table.insert(args, "--request")
+  table.insert(args, self.method)
+
+  table.insert(args, "--url")
+  table.insert(args, self.url)
+
+  table.insert(args, "--max-time")
+  table.insert(args, self.timeout or 60000)
+
+  if self.headers then
+    for k, v in pairs(self.headers) do
+      table.insert(args, "--header")
+      table.insert(args, format_header(k, v))
+    end
+  end
+
+  if self.argv then
+    for _, v in ipairs(self.argv) do
+      table.insert(args, v)
+    end
+  end
+
+  if self.body then
+    table.insert(args, "--data-binary")
+    table.insert(args, self.body)
+  end
+
+  if self.secrets then
+    for env, secret_header in self.secrets do
+      table.insert(args, "--variable")
+      table.insert(args, ("%%%s"):format(env))
+      table.insert(args, "--expand-header")
+      table.insert(args, ("%s: {{%s}}"):format(secret_header, env))
+    end
+  end
+
+  local opts = {
+    text = true,
+    stdin = self.body == "@-" or nil,
+    timeout = self.timeout + 5000,
   }
 
-  -- Without this, a host that drops packets rather than refusing the connection
-  -- stalls for the whole --max-time. On loopback that cannot happen — nothing
-  -- listening means an instant ECONNREFUSED — so it only shows up off-box.
-  if req.connect_timeout then
-    table.insert(cmd, "--connect-timeout")
-    table.insert(cmd, tostring(req.connect_timeout / 1000))
-  end
-
-  if req.cacert then
-    table.insert(cmd, "--cacert")
-    table.insert(cmd, req.cacert)
-  end
-  if req.insecure then
-    table.insert(cmd, "--insecure")
-  end
-
-  -- Sort header names so the argv is deterministic (pairs() order is not).
-  local names = vim.tbl_keys(req.headers or {})
-  table.sort(names)
-  for _, name in ipairs(names) do
-    table.insert(cmd, "--header")
-    table.insert(cmd, ("%s: %s"):format(name, req.headers[name]))
-  end
-
-  -- Secrets travel as curl variables read from the environment, so the value
-  -- itself never reaches the argv. `request()` puts them in curl's env.
-  local vars = vim.tbl_keys(req.secrets or {})
-  table.sort(vars)
-  for _, var in ipairs(vars) do
-    table.insert(cmd, "--variable")
-    table.insert(cmd, "%" .. var)
-  end
-
-  local expanded = vim.tbl_keys(req.expand_headers or {})
-  table.sort(expanded)
-  for _, name in ipairs(expanded) do
-    table.insert(cmd, "--expand-header")
-    table.insert(cmd, ("%s: %s"):format(name, req.expand_headers[name]))
-  end
-
-  if req.body then
-    -- Read the body from stdin: keeps large prompts off the command line.
-    table.insert(cmd, "--data-binary")
-    table.insert(cmd, "@-")
-  end
-
-  return cmd
+  return { args = args, opts = opts }
 end
 
 ---Split curl's stdout into body and status code
@@ -168,6 +185,7 @@ local function split_output(stdout)
   if not at then
     return 0, stdout
   end
+
   local body = stdout:sub(1, at - 1)
   local status = tonumber(stdout:sub(at + #MARKER)) or 0
   return status, body
@@ -194,99 +212,38 @@ local function handle(out)
   return nil, { status = status, body = body }
 end
 
----Options for |vim.system()|, including the environment carrying any secrets
+---@class Hive.Curl.Response
+---@field status integer HTTP status code
+---@field body string raw response body
+
+---Perform an async HTTP request.
 ---@param req Hive.Curl.Request
----@return table
-local function system_opts(req)
-  local opts = {
-    text = true,
-    stdin = req.body,
-    -- Give curl's own --max-time a head start so timeouts surface as exit
-    -- code 28 rather than as a SIGTERM from vim.system.
-    timeout = (req.timeout or 60000) + 5000,
-  }
-
-  if req.secrets and next(req.secrets) then
-    -- vim.system() extends the parent environment rather than replacing it.
-    opts.env = vim.deepcopy(req.secrets)
-  end
-
-  return opts
-end
-
----Perform an HTTP request.
----
---- Asynchronous when `callback` is given (invoked via |vim.schedule()|, so it is
---- safe to touch buffers and windows from it), returning the `vim.SystemObj` as
---- a third value so a superseded request can be killed. Blocking otherwise, in
---- which case the wait is interruptible with `CTRL-C`.
----
----@param req Hive.Curl.Request
----@param callback? fun(err: string|nil, res: Hive.Curl.Response|nil)
----@return string|nil err set only in blocking mode
----@return Hive.Curl.Response|nil res set only in blocking mode
----@return vim.SystemObj|nil obj cancellation handle, set only in async mode
+---@param callback fun(err: string|nil, res: Hive.Curl.Response|nil)
+---@return vim.SystemObj|nil obj cancellation handle
 function M.request(req, callback)
   if vim.fn.executable("curl") ~= 1 then
     local err = "curl executable not found in $PATH"
-    if callback then
-      vim.schedule(function()
-        callback(err, nil)
-      end)
-      return
-    end
-    return err
-  end
-
-  local cmd = M.build_args(req)
-  local opts = system_opts(req)
-
-  if callback then
-    -- vim.system() throws on a bad binary or cwd, which the executable() check
-    -- above does not cover. Unguarded, that throw inside a coroutine is a
-    -- silent hang, so route it through the same callback as any curl failure.
-    local spawned, obj = pcall(vim.system, cmd, opts, function(out)
-      local err, res = handle(out)
-      vim.schedule(function()
-        callback(err, res)
-      end)
+    vim.schedule(function()
+      callback(err, nil)
     end)
-
-    if not spawned then
-      vim.schedule(function()
-        callback(("could not run curl (%s)"):format(tostring(obj)), nil)
-      end)
-      return
-    end
-
-    return nil, nil, obj --[[@as vim.SystemObj]]
+    return
   end
 
-  local done, completed = false, nil
-  local spawned, obj = pcall(vim.system, cmd, opts, function(out)
-    completed = out
-    done = true
+  local spawned, obj = pcall(vim.system, req.args, req.opts, function(out)
+    local err, res = handle(out)
+    vim.schedule(function()
+      callback(err, res)
+    end)
   end)
 
   if not spawned then
-    return ("could not run curl (%s)"):format(tostring(obj))
-  end
-
-  -- vim.wait() keeps the event loop turning, so a slow server can be abandoned
-  -- with CTRL-C. `SystemObj:wait()` cannot be interrupted at all — tolerable at
-  -- loopback latency, not over a network.
-  local finished, reason = vim.wait(opts.timeout, function()
-    return done
-  end, 5)
-
-  if not finished then
-    pcall(function()
-      obj:kill("sigterm")
+    vim.schedule(function()
+      callback(("could not run curl (%s)"):format(tostring(obj)), nil)
     end)
-    return reason == -2 and "request interrupted" or "operation timed out"
+    return
   end
 
-  return handle(completed --[[@as vim.SystemCompleted]])
+  return obj --[[@as vim.SystemObj]]
 end
 
 return M

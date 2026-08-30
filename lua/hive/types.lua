@@ -60,9 +60,7 @@
 -- lua/hive/curl.lua -----------------------------------------------------------
 
 ---@class Hive.Curl
----@field build_args fun(req: Hive.Curl.Request): string[] build the curl argv for a request
----@field version fun(): integer[]|nil curl's version as { major, minor, patch }
----@field supports_expand fun(): boolean whether curl understands --variable/--expand-header
+---@field new_request fun(req: Hive.Curl.Request): string[] build the curl argv for a request
 ---@field request fun(req: Hive.Curl.Request, callback?: fun(err: string|nil, res: Hive.Curl.Response|nil)): string|nil, Hive.Curl.Response|nil, vim.SystemObj|nil
 
 -- lua/hive/api.lua ------------------------------------------------------------
