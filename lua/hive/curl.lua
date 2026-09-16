@@ -27,7 +27,7 @@ local CURL_ERRORS = {
 ---@field method string HTTP verb (default "GET")
 ---@field headers? table<string, string> request headers, placed on the argv
 ---@field body? string raw request body, sent on curl's stdin
----@field timeout? integer milliseconds for the whole request (default 60000)
+---@field timeout? integer milliseconds for the whole request (default 30)
 ---@field expand_headers? table<string, string> headers curl expands from a variable, keeping the value off the argv
 ---@field env? table<string, string> variables placed in curl's environment, not Neovim's
 local RequestBuilder = {}
@@ -35,7 +35,7 @@ RequestBuilder.__index = RequestBuilder
 
 ---@return Hive.Curl.RequestBuilder
 function RequestBuilder.new()
-  local args = { ["url"] = nil, ["method"] = "GET", ["timeout"] = 60000 }
+  local args = { ["url"] = nil, ["method"] = "GET", ["timeout"] = 30 }
   return setmetatable(args, RequestBuilder)
 end
 
@@ -148,7 +148,7 @@ function RequestBuilder:build()
   table.insert(args, self.url)
 
   table.insert(args, "--max-time")
-  table.insert(args, self.timeout or 60000)
+  table.insert(args, self.timeout or 30)
 
   if self.headers then
     for k, v in pairs(self.headers) do

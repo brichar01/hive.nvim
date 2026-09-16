@@ -16,7 +16,7 @@ local M = {}
 local defaults = {
   base_url = "http://localhost:8080",
   model = "default",
-  timeout = 60000, -- ms, passed to curl --max-time and vim.system
+  timeout = 30, -- ms, passed to curl --max-time and vim.system
 
   headers = {
     ["Content-Type"] = "application/json",
@@ -44,6 +44,14 @@ local defaults = {
 -- Access config values directly: Config.base_url
 local config = vim.deepcopy(defaults)
 
+-- Memoised result of an `api_key` function. A keyring lookup is a blocking IPC
+-- round trip and `resolve_api_key` runs once per request, so it is asked once
+-- and the answer kept until the next `setup()`. Only a usable token is cached:
+-- a lookup that came back empty because the wallet was still locked is retried
+-- rather than turned into a session-long absence.
+---@type string|nil
+local cached_key = nil
+
 -- Created at module load — always available
 M.augroup = vim.api.nvim_create_augroup("hive", { clear = true })
 M.ns = vim.api.nvim_create_namespace("hive")
@@ -61,12 +69,34 @@ function M.defaults()
 end
 
 ---Resolve the bearer token from the config value or the environment.
+---
+--- An explicit `api_key` wins over the environment. A function is called once
+--- and its answer memoised until the next `setup()`, so a keyring lookup costs
+--- one IPC round trip per session rather than one per request. What comes back
+--- is the token itself and not the variable
+--- holding it: the caller hands it straight to curl's own environment, so it
+--- never has to sit in Neovim's, where every child process spawned afterwards
+--- would inherit it.
 ---@return string|nil token
+---@return "config"|"env"|nil source where the token came from
 function M.resolve_api_key()
-  local env = config.api_key_env
-  local value = vim.env[env]
+  local key = config.api_key
+  if type(key) == "function" then
+    if cached_key then
+      return cached_key, "config"
+    end
+    key = key()
+    if type(key) == "string" and key ~= "" then
+      cached_key = key
+    end
+  end
+  if type(key) == "string" and key ~= "" then
+    return key, "config"
+  end
+
+  local value = vim.env[config.api_key_env]
   if type(value) == "string" and value ~= "" then
-    return env
+    return value, "env"
   end
 
   return nil
@@ -76,6 +106,7 @@ end
 ---@param opts? Hive.UserOptions plugin options
 function M.setup(opts)
   config = vim.tbl_deep_extend("force", {}, vim.deepcopy(defaults), opts or {})
+  cached_key = nil
 
   local Util = require("hive.util")
 

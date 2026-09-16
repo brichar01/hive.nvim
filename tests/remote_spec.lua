@@ -49,7 +49,7 @@ describe("connect timeout", function()
 
   it("rides on every request built by the api layer", function()
     configure({ connect_timeout = 1500 })
-    assert.are.equal(1500, Api.completions_request("hi", 4).connect_timeout)
+    assert.are.equal(1500, Api.fim_request("hi", "", 4).connect_timeout)
   end)
 
   it("is rejected when it exceeds the request timeout", function()
@@ -116,7 +116,7 @@ describe("api key", function()
 
   it("sends no Authorization header when unset", function()
     configure({})
-    local req = Api.completions_request("hi", 4)
+    local req = Api.fim_request("hi", "", 4)
 
     assert.is_nil(req.headers["Authorization"])
     assert.is_nil(req.expand_headers)
@@ -160,7 +160,7 @@ describe("api key", function()
   -- it, the token must not be reconstructable from the command line.
   it("keeps the token off the argv where curl supports it", function()
     configure({ api_key = "super-secret-value" })
-    local req = Api.completions_request("hi", 4)
+    local req = Api.fim_request("hi", "", 4)
     local cmd = Curl.build_args(req)
 
     if Curl.supports_expand() then
@@ -178,7 +178,7 @@ describe("api key", function()
 
   it("does not leak the token into the shared config headers table", function()
     configure({ api_key = "leaky" })
-    Api.completions_request("hi", 4)
+    Api.fim_request("hi", "", 4)
     assert.is_nil(Config.headers["Authorization"])
   end)
 end)

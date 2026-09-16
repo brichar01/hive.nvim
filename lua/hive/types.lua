@@ -7,7 +7,7 @@
 ---@class Hive.Plugin
 ---@field did_setup boolean whether setup() has been called
 ---@field setup fun(opts?: Hive.UserOptions) setup the plugin with user options
----@field completions fun(prompt: string, max_tokens: integer, callback?: fun(err: string|nil, completion: Hive.Completion|nil)): string|nil, Hive.Completion|nil, vim.SystemObj|nil
+---@field completions fun(prefix: string, suffix: string, max_tokens: integer, callback?: fun(err: string|nil, completion: Hive.Completion|nil)): string|nil, Hive.Completion|nil, vim.SystemObj|nil
 
 -- lua/hive/config.lua ---------------------------------------------------------
 
@@ -67,9 +67,9 @@
 
 ---@class Hive.Api
 ---@field base_request fun(url: string): Hive.Curl.RequestBuilder shared credentials, TLS and timeout
----@field completions_request fun(prompt: string, max_tokens: integer): Hive.Curl.RequestBuilder
+---@field fim_request fun(prefix: string, suffix: string, max_tokens: integer): Hive.Curl.RequestBuilder
 ---@field parse_completion fun(res: Hive.Curl.Response): string|nil, Hive.Completion|nil
----@field completions fun(prompt: string, max_tokens: integer, callback?: fun(err: string|nil, completion: Hive.Completion|nil)): string|nil, Hive.Completion|nil, vim.SystemObj|nil
+---@field completions fun(prefix: string, suffix: string, max_tokens: integer, callback?: fun(err: string|nil, completion: Hive.Completion|nil)): string|nil, Hive.Completion|nil, vim.SystemObj|nil
 ---@field models fun(timeout?: integer): string|nil, string[]|nil model ids advertised by the server
 
 -- lua/hive/util.lua -----------------------------------------------------------

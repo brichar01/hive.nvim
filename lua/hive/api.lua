@@ -1,8 +1,11 @@
---- OpenAI-compatible endpoint bindings.
+--- Mistral endpoint bindings.
 ---
---- `/v1/completions` and `/v1/models` are implemented. Headers, model,
+--- `/v1/fim/completions` and `/v1/models` are implemented. Headers, model,
 --- credentials and base URL come from `hive.config`; callers supply nothing but
---- the prompt and a token budget.
+--- the text either side of the cursor and a token budget.
+---
+--- The server assembles the FIM sentinels from `prompt` and `suffix`, so hive
+--- sends the two sides as plain text and never spells a dialect's tokens.
 
 ---@class Hive.Api
 local M = {}
@@ -28,6 +31,9 @@ end
 local function error_message(status, body)
   local decoded = decode(body)
   local message = decoded and decoded.error and decoded.error.message
+  if type(message) ~= "string" then
+    message = decoded and decoded.message
+  end
   if type(message) ~= "string" then
     message = vim.trim(body)
   end
@@ -56,7 +62,7 @@ local function await(req)
 
   -- `build()` already pads the process budget past curl's own deadline; a
   -- little more on top keeps the wait from firing before curl gives up.
-  local budget = (req.opts.timeout or 60000) + 1000
+  local budget = (req.opts.timeout or 30) + 1000
   local waited = vim.wait(budget, function()
     return done
   end, 20)
@@ -83,12 +89,13 @@ function M.base_request(url)
                   :with_timeout(Config.timeout)
                   :with_headers(Config.headers)
 
-  -- `resolve_api_key` names the variable the token lives in, not the token.
-  -- Its value is handed to curl under a fixed name through curl's own
-  -- environment, so the argv carries the name and never the credential.
-  local env = Config.resolve_api_key()
-  if env then
-    req:with_env({ HIVE_TOKEN = vim.env[env] })
+  -- Straight from `resolve_api_key` into curl's environment. Going by way of
+  -- Neovim's own would hand the token to every child process spawned after
+  -- it -- language servers, formatters, `:terminal` shells -- and the argv
+  -- carries only the variable's name either way.
+  local token = Config.resolve_api_key()
+  if token then
+    req:with_env({ HIVE_TOKEN = token })
     req:with_expand_headers({ Authorization = "Bearer {{HIVE_TOKEN}}" })
   end
 
@@ -109,15 +116,18 @@ function M.parse_completion(res)
     return "response body is not valid JSON"
   end
 
+  -- The completion arrives chat-shaped: `choices[1].message.content`, not the
+  -- `choices[1].text` an OpenAI legacy completion would carry.
   local choice = decoded.choices and decoded.choices[1]
-  if not choice or type(choice.text) ~= "string" then
+  local text = choice and choice.message and choice.message.content
+  if type(text) ~= "string" then
     return "response contained no completion choices"
   end
 
   -- An empty string is a successful-looking failure: HTTP 200, a plausible
   -- token count, and nothing to show. A stop string that matches at position 0
   -- consumes the whole completion and reports it as generated.
-  if choice.text == "" then
+  if text == "" then
     local generated = decoded.usage and decoded.usage.completion_tokens or 0
     if generated > 0 then
       return (
@@ -131,25 +141,27 @@ function M.parse_completion(res)
 
   return nil,
     {
-      text = choice.text,
+      text = text,
       finish_reason = choice.finish_reason,
       usage = decoded.usage,
       raw = decoded,
     }
 end
 
----Build the request for `POST /v1/completions`. Exposed for testing.
----@param prompt string
+---Build the request for `POST /v1/fim/completions`. Exposed for testing.
+---@param prefix string text before the cursor
+---@param suffix string text after the cursor, `""` when the cursor is at the end
 ---@param max_tokens integer
 ---@return Hive.Curl.RequestBuilder
-function M.completions_request(prompt, max_tokens)
+function M.fim_request(prefix, suffix, max_tokens)
   local Config = require("hive.config")
 
-  local req = M.base_request(Config.base_url .. "/v1/completions")
+  local req = M.base_request(Config.base_url .. "/v1/fim/completions")
   req:with_method("POST")
   req:with_body(vim.json.encode({
     model = Config.model,
-    prompt = prompt,
+    prompt = prefix,
+    suffix = suffix,
     max_tokens = max_tokens,
     stream = false,
   }))
@@ -157,27 +169,29 @@ function M.completions_request(prompt, max_tokens)
   return req
 end
 
----Request a text completion from `POST /v1/completions`.
+---Request a fill-in-the-middle completion from `POST /v1/fim/completions`.
 ---
 --- Asynchronous when `callback` is given, blocking otherwise:
 --- >lua
 ---   -- async; the third return value cancels the request
----   local _, _, obj = require("hive.api").completions("The capital of France is", 16,
+---   local _, _, obj = require("hive.api").completions(
+---     "def add(a, b):\n  ", "\n  return total", 16,
 ---     function(err, out)
 ---       if err then return end
 ---       print(out.text)
 ---     end)
 ---
----   -- blocking
----   local err, out = require("hive.api").completions("2 + 2 =", 8)
+---   -- blocking, cursor at the end of the buffer
+---   local err, out = require("hive.api").completions("2 + 2 =", "", 8)
 --- <
----@param prompt string the prompt to complete
+---@param prefix string text before the cursor
+---@param suffix string text after the cursor, `""` when the cursor is at the end
 ---@param max_tokens integer maximum number of tokens to generate
 ---@param callback? fun(err: string|nil, completion: Hive.Completion|nil)
 ---@return string|nil err set only in blocking mode
 ---@return Hive.Completion|nil completion set only in blocking mode
 ---@return vim.SystemObj|nil obj cancellation handle, set only in async mode
-function M.completions(prompt, max_tokens, callback)
+function M.completions(prefix, suffix, max_tokens, callback)
   -- Report a bad argument through whichever channel the caller chose.
   local function fail(err)
     if callback then
@@ -188,22 +202,25 @@ function M.completions(prompt, max_tokens, callback)
   end
 
   local ok, verr = pcall(function()
-    vim.validate("prompt", prompt, "string")
+    vim.validate("prefix", prefix, "string")
+    vim.validate("suffix", suffix, "string")
     vim.validate("max_tokens", max_tokens, "number")
     vim.validate("callback", callback, "function", true)
   end)
   if not ok then
     return fail(tostring(verr))
   end
-  if prompt == "" then
-    return fail("prompt must not be empty")
+  -- Either side may be empty on its own -- the cursor sits at one end of the
+  -- buffer -- but with both empty there is nothing to fill in the middle of.
+  if prefix == "" and suffix == "" then
+    return fail("prefix and suffix must not both be empty")
   end
   if max_tokens < 1 or max_tokens % 1 ~= 0 then
     return fail("max_tokens must be a positive integer")
   end
 
   local Curl = require("hive.curl")
-  local req = M.completions_request(prompt, max_tokens):build()
+  local req = M.fim_request(prefix, suffix, max_tokens):build()
   ---@cast req Hive.Curl.Request
 
   if not callback then

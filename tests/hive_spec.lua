@@ -70,6 +70,6 @@ describe("completions", function()
   end)
 
   it("delegates validation to hive.api", function()
-    assert.are.equal("prompt must not be empty", hive.completions("", 16))
+    assert.are.equal("prefix and suffix must not both be empty", hive.completions("", "", 16))
   end)
 end)
