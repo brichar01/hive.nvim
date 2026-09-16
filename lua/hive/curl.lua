@@ -27,7 +27,7 @@ local CURL_ERRORS = {
 ---@field method string HTTP verb (default "GET")
 ---@field headers? table<string, string> request headers, placed on the argv
 ---@field body? string raw request body, sent on curl's stdin
----@field timeout? integer milliseconds for the whole request (default 30)
+---@field timeout? integer seconds for the whole request (default 30)
 ---@field expand_headers? table<string, string> headers curl expands from a variable, keeping the value off the argv
 ---@field env? table<string, string> variables placed in curl's environment, not Neovim's
 local RequestBuilder = {}
@@ -74,7 +74,7 @@ function RequestBuilder:with_method(method)
   return self
 end
 
----@param timeout integer
+---@param timeout integer seconds for the whole request
 function RequestBuilder:with_timeout(timeout)
   self["timeout"] = timeout
   return self
@@ -182,10 +182,13 @@ function RequestBuilder:build()
     end
   end
 
+  -- The only millisecond in the module: |vim.system()| takes one, and it is a
+  -- kill switch behind curl's own `--max-time`, not a second deadline. Five
+  -- seconds of slack leave curl to fail on its own terms and report why.
   local opts = {
     text = true,
     stdin = self.body == "@-" or nil,
-    timeout = self.timeout + 5000,
+    timeout = (self.timeout + 5) * 1000,
     env = self.env,
   }
 

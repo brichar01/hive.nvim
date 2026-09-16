@@ -60,20 +60,21 @@ local function await(req)
     done, request_err, res = true, err, result
   end)
 
-  -- `build()` already pads the process budget past curl's own deadline; a
-  -- little more on top keeps the wait from firing before curl gives up.
-  local budget = (req.opts.timeout or 30) + 1000
+  -- `req.opts.timeout` is |vim.system()|'s own millisecond budget, already
+  -- padded past curl's `--max-time`; a little more on top keeps the wait from
+  -- firing before the process does.
+  local budget = (req.opts.timeout or 35000) + 1000
   local waited = vim.wait(budget, function()
     return done
   end, 20)
 
   if not waited then
-    return ("request did not finish within %dms"):format(budget)
+    return ("request did not finish within %ds"):format(math.floor(budget / 1000))
   end
   return request_err, res
 end
 
----Build the request every endpoint shares: credentials, TLS and the timeout.
+---Build the request every endpoint shares: credentials and the timeout.
 ---
 --- Exposed so `hive.health` probes the server exactly the way a real request
 --- would, rather than reaching a server the completion path could not.
@@ -247,13 +248,13 @@ end
 --- where the answer to "is the configured model actually served" matters more
 --- than it does at request time. A server that does not implement the endpoint
 --- returns an error rather than an empty list, so the two stay distinguishable.
----@param timeout? integer milliseconds (default 5000)
+---@param timeout? integer seconds (default 5)
 ---@return string|nil err
 ---@return string[]|nil models
 function M.models(timeout)
   local Config = require("hive.config")
 
-  local req = M.base_request(Config.base_url .. "/v1/models"):with_timeout(timeout or 5000):build()
+  local req = M.base_request(Config.base_url .. "/v1/models"):with_timeout(timeout or 5):build()
   ---@cast req Hive.Curl.Request
 
   local err, res = await(req)

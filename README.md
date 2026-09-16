@@ -95,8 +95,7 @@ From the command line:
 require("hive").setup({
   base_url = "http://localhost:8080",
   model = "default",
-  timeout = 60000,        -- ms, whole request
-  connect_timeout = 3000, -- ms, connect phase only
+  timeout = 60, -- seconds, whole request
   headers = {
     ["Content-Type"] = "application/json",
     ["Accept"] = "application/json",
@@ -115,25 +114,58 @@ require("hive").setup({
   base_url = "http://gpubox.lan:8080",
   model = "qwen2.5-coder:7b",
 
-  -- Optional. Leave api_key unset and export HIVE_API_KEY instead: on
-  -- curl >= 8.3 the token is passed out of band, so it never appears in the
-  -- process list where any local process could read it.
+  -- Optional. The token is passed to curl out of band on curl >= 8.3, so it
+  -- never appears in the process list where any local process could read it.
   api_key_env = "HIVE_API_KEY",
-
-  -- Optional, for an https:// base_url with a private CA.
-  tls = { cacert = "/etc/ssl/certs/lan-ca.pem" },
 })
 ```
 
-Two things worth knowing before you do:
+#### The bearer token
 
-- **Plain HTTP sends your source code across the network in the clear.** That is
-  fine on a segment you trust and not otherwise. TLS costs a full handshake per
-  request, because each request is its own `curl` process.
-- **`connect_timeout` is what keeps a sleeping server from freezing Neovim.** A
-  host that drops packets rather than refusing the connection would otherwise
-  stall for the whole `timeout`. Nothing listening on `localhost` fails
-  instantly, which is why this only matters once the server is elsewhere.
+`api_key` is unset by default, so nothing is sent unless you configure it. The
+fallback order is `api_key` first, then `$HIVE_API_KEY` (renameable via
+`api_key_env`), then no `Authorization` header at all.
+
+A literal string ends up in your dotfiles. `api_key` also accepts a function, so
+the token can come from a wallet instead — `resolve_api_key` calls it once and
+memoises the answer, which means a blocking lookup costs one IPC round trip per
+session rather than one per request:
+
+```lua
+require("hive").setup({
+  api_key = function()
+    if vim.fn.executable("secret-tool") ~= 1 then
+      return nil
+    end
+    -- A locked wallet prompts for a passphrase and nothing here can answer it,
+    -- so the lookup is killed rather than left waiting.
+    local out = vim.system(
+      { "secret-tool", "lookup", "service", "mistral", "key", "api" },
+      { text = true, timeout = 10000 }
+    ):wait()
+    if out.code ~= 0 then
+      return nil
+    end
+    -- A trailing newline would ride into `Authorization: Bearer` and read as a
+    -- bad key.
+    return vim.trim(out.stdout or "")
+  end,
+})
+```
+
+That reads the item created by:
+
+```sh
+secret-tool store --label='Mistral API key' service mistral key api
+```
+
+Returning `nil` from the function falls through to `$HIVE_API_KEY`, so a missing
+`secret-tool`, a locked wallet or an absent item all degrade rather than fail.
+
+Note that Secret Service items are addressed by their attribute pairs, not by a
+folder and entry name — a secret already in KWallet under `kdewallet` /
+`Passwords` / `MISTRAL_API_KEY` is not reachable this way and has to be stored
+again with the command above.
 
 Full documentation lives in [`:help hive`](https://github.com/brichar01/hive.nvim/blob/main/doc/hive.txt).
 

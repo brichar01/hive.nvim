@@ -9,9 +9,7 @@ local function check_config()
     vim.validate("base_url", Config.base_url, "string")
     vim.validate("model", Config.model, "string")
     vim.validate("timeout", Config.timeout, "number")
-    vim.validate("connect_timeout", Config.connect_timeout, "number")
     vim.validate("headers", Config.headers, "table")
-    vim.validate("tls", Config.tls, "table")
   end)
 
   if not ok then
@@ -20,11 +18,10 @@ local function check_config()
   end
 
   vim.health.ok(
-    ("options are valid (base_url = %s, model = %s, timeout = %dms, connect_timeout = %dms)"):format(
+    ("options are valid (base_url = %s, model = %s, timeout = %ds)"):format(
       Config.base_url,
       Config.model,
-      Config.timeout,
-      Config.connect_timeout
+      Config.timeout
     )
   )
 end
@@ -46,18 +43,11 @@ local function check_endpoint()
   if loopback then
     vim.health.ok(("server is on this machine (%s)"):format(host))
   elseif scheme == "https" then
-    if Config.tls.insecure then
-      vim.health.warn(
-        ("%s is remote and TLS verification is off"):format(host),
-        "tls.insecure means the connection is encrypted but unauthenticated. Set tls.cacert to the server's CA instead."
-      )
-    else
-      vim.health.ok(("server is remote (%s) over verified TLS"):format(host))
-    end
+    vim.health.ok(("server is remote (%s) over verified TLS"):format(host))
   else
     vim.health.warn(
       ("%s is remote and the connection is plaintext"):format(host),
-      "Prompts carry your source code. Use https:// with tls.cacert, or keep the server on a trusted segment."
+      "Prompts carry your source code. Use https://, or keep the server on a trusted segment."
     )
   end
 
@@ -100,7 +90,7 @@ local function check_server()
   local Config = require("hive.config")
   local Api = require("hive.api")
 
-  local err, models = Api.models(5000)
+  local err, models = Api.models(5)
   if err then
     vim.health.warn(
       ("server at %s is not reachable: %s"):format(Config.base_url, err),
