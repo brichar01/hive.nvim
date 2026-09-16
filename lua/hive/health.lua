@@ -38,7 +38,7 @@ local function check_endpoint()
   end
 
   local loopback = host == "localhost" or host == "127.0.0.1" or host == "::1"
-  local token, source = Config.resolve_api_key()
+  local token = Config.resolve_api_key()
 
   if loopback then
     vim.health.ok(("server is on this machine (%s)"):format(host))
@@ -54,20 +54,6 @@ local function check_endpoint()
   if not token then
     vim.health.info("no API key configured — requests are unauthenticated")
     return
-  end
-
-  local origin = source == "env" and ("$" .. Config.api_key_env) or "the api_key option"
-  if Curl.supports_expand() then
-    vim.health.ok(("API key from %s, passed to curl out of band"):format(origin))
-  else
-    local v = Curl.version()
-    vim.health.warn(
-      ("API key from %s is placed on curl's command line (curl %s has no --expand-header)"):format(
-        origin,
-        v and table.concat(v, ".") or "unknown"
-      ),
-      "Any local process can read it from /proc while a request is in flight. Upgrade to curl 8.3.0 or newer."
-    )
   end
 end
 

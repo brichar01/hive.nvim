@@ -75,9 +75,6 @@ local function await(req)
 end
 
 ---Build the request every endpoint shares: credentials and the timeout.
----
---- Exposed so `hive.health` probes the server exactly the way a real request
---- would, rather than reaching a server the completion path could not.
 ---@param url string
 ---@return Hive.Curl.RequestBuilder
 function M.base_request(url)
@@ -90,10 +87,6 @@ function M.base_request(url)
                   :with_timeout(Config.timeout)
                   :with_headers(Config.headers)
 
-  -- Straight from `resolve_api_key` into curl's environment. Going by way of
-  -- Neovim's own would hand the token to every child process spawned after
-  -- it -- language servers, formatters, `:terminal` shells -- and the argv
-  -- carries only the variable's name either way.
   local token = Config.resolve_api_key()
   if token then
     req:with_env({ HIVE_TOKEN = token })
@@ -117,17 +110,12 @@ function M.parse_completion(res)
     return "response body is not valid JSON"
   end
 
-  -- The completion arrives chat-shaped: `choices[1].message.content`, not the
-  -- `choices[1].text` an OpenAI legacy completion would carry.
   local choice = decoded.choices and decoded.choices[1]
   local text = choice and choice.message and choice.message.content
   if type(text) ~= "string" then
     return "response contained no completion choices"
   end
 
-  -- An empty string is a successful-looking failure: HTTP 200, a plausible
-  -- token count, and nothing to show. A stop string that matches at position 0
-  -- consumes the whole completion and reports it as generated.
   if text == "" then
     local generated = decoded.usage and decoded.usage.completion_tokens or 0
     if generated > 0 then
@@ -193,7 +181,6 @@ end
 ---@return Hive.Completion|nil completion set only in blocking mode
 ---@return vim.SystemObj|nil obj cancellation handle, set only in async mode
 function M.completions(prefix, suffix, max_tokens, callback)
-  -- Report a bad argument through whichever channel the caller chose.
   local function fail(err)
     if callback then
       callback(err, nil)
@@ -211,8 +198,7 @@ function M.completions(prefix, suffix, max_tokens, callback)
   if not ok then
     return fail(tostring(verr))
   end
-  -- Either side may be empty on its own -- the cursor sits at one end of the
-  -- buffer -- but with both empty there is nothing to fill in the middle of.
+
   if prefix == "" and suffix == "" then
     return fail("prefix and suffix must not both be empty")
   end
@@ -243,11 +229,6 @@ function M.completions(prefix, suffix, max_tokens, callback)
 end
 
 ---List the model ids the server advertises on `GET /v1/models`.
----
---- Blocking, and deliberately short-deadlined: this backs `:checkhealth hive`,
---- where the answer to "is the configured model actually served" matters more
---- than it does at request time. A server that does not implement the endpoint
---- returns an error rather than an empty list, so the two stay distinguishable.
 ---@param timeout? integer seconds (default 5)
 ---@return string|nil err
 ---@return string[]|nil models

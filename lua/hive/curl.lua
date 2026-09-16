@@ -182,9 +182,7 @@ function RequestBuilder:build()
     end
   end
 
-  -- The only millisecond in the module: |vim.system()| takes one, and it is a
-  -- kill switch behind curl's own `--max-time`, not a second deadline. Five
-  -- seconds of slack leave curl to fail on its own terms and report why.
+  -- The only millisecond in the module
   local opts = {
     text = true,
     stdin = self.body == "@-" or nil,

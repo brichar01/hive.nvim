@@ -7,10 +7,6 @@
 ---@field api_key_env string
 local M = {}
 
--- Hard-coded defaults. The target is an OpenAI-compatible server, local by
--- default but not necessarily on this machine: every option below that is not
--- `base_url` exists because pointing it at another host changes what can go
--- wrong. See IMPLEMENTATION.md §9.6.
 ---@class Hive.DefaultOptions
 local defaults = {
   base_url = "http://localhost:8080",
@@ -25,8 +21,7 @@ local defaults = {
   -- Bearer token. nil sends no Authorization header at all, which is right for
   -- an unauthenticated server on a trusted segment. A literal string here ends
   -- up in your dotfiles; prefer leaving it nil and exporting `api_key_env`, or
-  -- pass a function that reads a wallet -- `resolve_api_key` calls it once and
-  -- memoises the answer, so a blocking lookup costs one round trip per session.
+  -- pass a function that reads a wallet.
   ---@type string|fun(): string|nil
   api_key = nil,
   api_key_env = "HIVE_API_KEY",
@@ -35,11 +30,6 @@ local defaults = {
 -- Access config values directly: Config.base_url
 local config = vim.deepcopy(defaults)
 
--- Memoised result of an `api_key` function. A keyring lookup is a blocking IPC
--- round trip and `resolve_api_key` runs once per request, so it is asked once
--- and the answer kept until the next `setup()`. Only a usable token is cached:
--- a lookup that came back empty because the wallet was still locked is retried
--- rather than turned into a session-long absence.
 ---@type string|nil
 local cached_key = nil
 
@@ -61,12 +51,11 @@ end
 
 ---Resolve the bearer token from the config value or the environment.
 ---@return string|nil token
----@return "config"|"env"|nil source where the token came from
 function M.resolve_api_key()
   local key = config.api_key
   if type(key) == "function" then
     if cached_key then
-      return cached_key, "config"
+      return cached_key
     end
     key = key() or ""
     if type(key) == "string" and key ~= "" then
@@ -74,12 +63,12 @@ function M.resolve_api_key()
     end
   end
   if type(key) == "string" and key ~= "" then
-    return key, "config"
+    return key
   end
 
   local value = vim.env[config.api_key_env]
   if type(value) == "string" and value ~= "" then
-    return value, "env"
+    return value
   end
 
   return nil
