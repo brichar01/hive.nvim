@@ -83,9 +83,13 @@ function M.base_request(url)
                   :with_timeout(Config.timeout)
                   :with_headers(Config.headers)
 
-  local token = Config.resolve_api_key()
-  if token then
-    req:with_secrets({ [token] = "Authorization: Bearer {{%s}}" })
+  -- `resolve_api_key` names the variable the token lives in, not the token.
+  -- Its value is handed to curl under a fixed name through curl's own
+  -- environment, so the argv carries the name and never the credential.
+  local env = Config.resolve_api_key()
+  if env then
+    req:with_env({ HIVE_TOKEN = vim.env[env] })
+    req:with_expand_headers({ Authorization = "Bearer {{HIVE_TOKEN}}" })
   end
 
   return req

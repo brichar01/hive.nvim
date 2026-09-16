@@ -28,7 +28,8 @@ local CURL_ERRORS = {
 ---@field headers? table<string, string> request headers, placed on the argv
 ---@field body? string raw request body, sent on curl's stdin
 ---@field timeout? integer milliseconds for the whole request (default 60000)
----@field secrets? table<string, string> env var name and heaer type, bypasses nvim
+---@field expand_headers? table<string, string> headers curl expands from a variable, keeping the value off the argv
+---@field env? table<string, string> variables placed in curl's environment, not Neovim's
 local RequestBuilder = {}
 RequestBuilder.__index = RequestBuilder
 
@@ -43,8 +44,7 @@ function M.new_request()
   return RequestBuilder.new()
 end
 
--- Breakout, for appending custom (unintended or dangerous)
--- flags placed at the end
+-- Breakout, for appending custom (unintended or dangerous) options
 ---@param name string
 ---@param value string?
 ---@return Hive.Curl.RequestBuilder
@@ -92,14 +92,29 @@ function RequestBuilder:with_headers(headers)
   return self
 end
 
----@param secrets table<string, string> ENV var to Header mapping
+---@param env table<string, string> variable name to value
 ---@return Hive.Curl.RequestBuilder
-function RequestBuilder:with_secrets(secrets)
-  if not self.secrets then
-    self.secrets = {}
+function RequestBuilder:with_env(env)
+  if not self.env then
+    self.env = {}
   end
-  for k, v in pairs(secrets) do
-    self.secrets[k] = v
+  for k, v in pairs(env) do
+    self.env[k] = v
+  end
+  return self
+end
+
+--- Headers whose value curl assembles itself from `{{NAME}}` references to the
+--- variables set by `with_env`. Needs curl 8.3.0 or newer; older curl has no
+--- way to indirect and the header has to go through `with_headers` instead.
+---@param headers table<string, string> header name to value, `{{NAME}}` naming a `with_env` variable
+---@return Hive.Curl.RequestBuilder
+function RequestBuilder:with_expand_headers(headers)
+  if not self.expand_headers then
+    self.expand_headers = {}
+  end
+  for k, v in pairs(headers) do
+    self.expand_headers[k] = v
   end
   return self
 end
@@ -153,12 +168,17 @@ function RequestBuilder:build()
     table.insert(args, self.body)
   end
 
-  if self.secrets then
-    for env, secret_fmt in self.secrets do
+  if self.env then
+    for name in pairs(self.env) do
       table.insert(args, "--variable")
-      table.insert(args, ("%%%s"):format(env))
+      table.insert(args, ("%%%s"):format(name))
+    end
+  end
+
+  if self.expand_headers then
+    for k, v in pairs(self.expand_headers) do
       table.insert(args, "--expand-header")
-      table.insert(args, secret_fmt:format(env))
+      table.insert(args, ("%s: %s"):format(k, v))
     end
   end
 
@@ -166,6 +186,7 @@ function RequestBuilder:build()
     text = true,
     stdin = self.body == "@-" or nil,
     timeout = self.timeout + 5000,
+    env = self.env,
   }
 
   return { args = args, opts = opts }
