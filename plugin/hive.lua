@@ -28,7 +28,7 @@ local sub_cmds = {
 
       local Util = require("hive.util")
       Util.info("requesting completion...")
-      require("hive").completions(prompt, DEFAULT_MAX_TOKENS, function(err, completion)
+      require("hive").completions(prompt, "", DEFAULT_MAX_TOKENS, function(err, completion)
         if err then
           return Util.error(err)
         end
