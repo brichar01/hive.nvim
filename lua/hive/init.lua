@@ -17,7 +17,7 @@ end
 ---Request a fill-in-the-middle completion from `POST /v1/fim/completions`.
 ---
 --- Asynchronous when `callback` is given, blocking otherwise. See
---- `hive.api.completions` for details.
+--- `hive.direct.api.completions` for details.
 ---@param prefix string text before the cursor
 ---@param suffix string text after the cursor, `""` when the cursor is at the end
 ---@param max_tokens integer maximum number of tokens to generate
@@ -26,7 +26,7 @@ end
 ---@return Hive.Completion|nil completion set only in blocking mode
 ---@return vim.SystemObj|nil obj cancellation handle, set only in async mode
 function M.completions(prefix, suffix, max_tokens, callback)
-  return require("hive.api").completions(prefix, suffix, max_tokens, callback)
+  return require("hive.direct.api").completions(prefix, suffix, max_tokens, callback)
 end
 
 return M

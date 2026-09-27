@@ -53,7 +53,7 @@ end
 ---@return string|nil err
 ---@return Hive.Curl.Response|nil res
 local function await(req)
-  local Curl = require("hive.curl")
+  local Curl = require("hive.direct.curl")
 
   local done, request_err, res = false, nil, nil
   Curl.request(req, function(err, result)
@@ -79,7 +79,7 @@ end
 ---@return Hive.Curl.RequestBuilder
 function M.base_request(url)
   local Config = require("hive.config")
-  local Curl = require("hive.curl")
+  local Curl = require("hive.direct.curl")
 
   -- stylua: ignore
   local req = Curl.new_request()
@@ -163,7 +163,7 @@ end
 --- Asynchronous when `callback` is given, blocking otherwise:
 --- >lua
 ---   -- async; the third return value cancels the request
----   local _, _, obj = require("hive.api").completions(
+---   local _, _, obj = require("hive.direct.api").completions(
 ---     "def add(a, b):\n  ", "\n  return total", 16,
 ---     function(err, out)
 ---       if err then return end
@@ -171,7 +171,7 @@ end
 ---     end)
 ---
 ---   -- blocking, cursor at the end of the buffer
----   local err, out = require("hive.api").completions("2 + 2 =", "", 8)
+---   local err, out = require("hive.direct.api").completions("2 + 2 =", "", 8)
 --- <
 ---@param prefix string text before the cursor
 ---@param suffix string text after the cursor, `""` when the cursor is at the end
@@ -206,7 +206,7 @@ function M.completions(prefix, suffix, max_tokens, callback)
     return fail("max_tokens must be a positive integer")
   end
 
-  local Curl = require("hive.curl")
+  local Curl = require("hive.direct.curl")
   local req = M.fim_request(prefix, suffix, max_tokens):build()
   ---@cast req Hive.Curl.Request
 

@@ -42,13 +42,13 @@
 ---@field api_key string|fun(): string|nil merged from user/default options
 ---@field api_key_env string merged from user/default options
 
--- lua/hive/curl.lua -----------------------------------------------------------
+-- lua/hive/direct/curl.lua ----------------------------------------------------
 
 ---@class Hive.Curl
 ---@field new_request fun(): Hive.Curl.RequestBuilder start building a request
 ---@field request fun(req: Hive.Curl.Request, callback: fun(err: string|nil, res: Hive.Curl.Response|nil)): vim.SystemObj|nil
 
--- lua/hive/api.lua ------------------------------------------------------------
+-- lua/hive/direct/api.lua -----------------------------------------------------
 
 ---@class Hive.Api
 ---@field base_request fun(url: string): Hive.Curl.RequestBuilder shared credentials and timeout
@@ -64,6 +64,11 @@
 ---@field info fun(msg: string) send info notification
 ---@field warn fun(msg: string) send warning notification
 ---@field error fun(msg: string) send error notification
+
+-- lua/hive/endpoint.lua -------------------------------------------------------
+
+---@class Hive.Endpoint
+---@field transport fun(url: string): string|nil, Hive.Endpoint.Transport|nil how `url` is addressed and protected
 
 -- lua/hive/health.lua ---------------------------------------------------------
 

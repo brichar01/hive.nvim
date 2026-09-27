@@ -12,7 +12,7 @@
       <img alt="GitHub badge" src="https://img.shields.io/github/v/release/brichar01/hive.nvim?style=for-the-badge&label=GitHub"/>
     </a>
   </p>
-  <p><em>Query an OpenAI-compatible API from Neovim</em></p>
+  <p><em>Code context, templated prompts and a coding agent, inside Neovim</em></p>
 </div>
 
 ______________________________________________________________________
@@ -27,26 +27,85 @@ Hive implements a few core ideas:
 
 The aim of these core ideas is to provide a user with more control over code style than pure vibe coding. Allowing the user to inject their real world context into the code shape itself, providing effective abstractions instead of the common brute force and re-implementation methods typified by generated code. 
 
-### Current scope:
+## 🗺️ Status
 
-#### In Scope
+Hive has three layers, each with its own command.
 
-- One endpoint: `POST /v1/completions`
-- A Lua API that takes a prompt and a token budget, and nothing else
-- Async by default, blocking when you want it
-- The server may be on this machine or elsewhere on your network — optional
-  bearer auth and TLS, with a connect deadline so a host that is down fails
-  fast instead of hanging the editor
+| Command | Layer | Modules | State |
+| --- | --- | --- | --- |
+| `:Hive` | Agent: a Neovim frontend for pi-coding-agent | `hive.agent`, `hive.fs` (planned) | Planned, see [`PLAN.md`](PLAN.md) |
+| `:HiveBare` | Direct: templated prompts sent straight to an endpoint | `hive.direct.*` | Fill-in-the-middle works |
+| `:HiveContext` | Context: select, gather and copy code | `hive.context.*`, `hive.workbench` | Works |
 
-#### Not implemented
+### Agent (planned)
 
-Rendering completions into scratch buffers, virtual text and floating windows is **not implemented yet** — the transport and API layers come first.
+Neovim starts a Node service that wraps `@earendil-works/pi-coding-agent`. The
+service owns the agent loop. Neovim is the filesystem: the agent's `read`, `write`
+and `edit` tools use buffers and never touch disk. An edit to an open file changes
+the buffer and leaves the file on disk as it was. A write to a new file opens a
+listed, modified, unsaved buffer. `bash`, `grep`, `find` and `ls` still read the
+filesystem.
+
+Lua only sends notifications to Node, and Node drives Neovim through the API. Lua
+never waits on Node, so a tool that reads a buffer cannot deadlock the editor.
+
+The API key stays in the secret store that `:HiveBare` uses. Lua resolves it and
+gives it to Node in the child's environment, never on the command line and never in
+Pi's own credential file.
+
+The build runs in stages: the RPC channel, a session that streams events into a
+buffer, a layer that rebuilds exact file bytes from buffer lines (line endings,
+BOM, trailing newline), the buffer-backed tools, open on write, then diff
+rendering and approval. One decision is open: when agent-touched buffers get saved,
+because `bash` and test runs read stale disk until they are.
+[`PLAN.md`](PLAN.md) has the full design.
+
+### Templated prompts
+
+A templated prompt is a fixed instruction, plus the context that `hive.context`
+gathers for it, sent as one request by `hive.direct.api`. The editor picks the
+context from the code (shape), and you give the direction.
+
+| Template | Context | State |
+| --- | --- | --- |
+| Fill in the middle | The enclosing function, split at the cursor | `:HiveBare fim`, `POST /v1/fim/completions` |
+| Summarise this diff | `git diff` of the file against a revision | Context works (`:HiveContext diff`), template planned |
+| Write a unit test for this function | The function, the file outline, and the definitions and usages of its symbols | Context works (`:HiveContext outline`, `:HiveContext symbol`), template planned |
+
+The server builds the FIM sentinels from `prompt` and `suffix`, so Hive sends
+the two sides as plain text and never writes a model's special tokens.
+
+`:HiveBare fim` appends the filled function to the project's workbench, a Markdown
+scratch file under `stdpath("cache")/workbenches`. The code in the buffer does not
+change, so you can compare the suggestion and take all or part of it.
+
+### Context
+
+`:HiveContext` finds code with treesitter and LSP. Selection uses node types for
+each language (Python, C, Rust, Lua and TypeScript), and a shared fallback list
+for other languages.
+
+| Subcommand | Does |
+| --- | --- |
+| `select call\|method\|class\|parent` | Select the enclosing node. With a range, select the nearest one that extends past it. |
+| `ref` | Copy `<path>:<first>-<last>` for a range, or `<signature> [<path>:<first>-<last>]` for the element at the cursor |
+| `rel` | Copy the buffer's path relative to the working directory |
+| `file` | Copy the buffer's absolute path |
+| `outline [reg]` | Copy a tree of signatures for the buffer, or for the range |
+| `symbol [reg]` | Copy the definitions and references of the symbol at the cursor, from LSP |
+| `diff [rev=<rev>] [reg]` | Copy the `git diff` of the buffer's file against `rev` (default `HEAD`) |
+| `fim` | Append the enclosing function, split at the cursor with FIM markers, to the workbench |
+| `workbench open\|new\|next\|previous` | Open this project's workbench, start a new one, or step between them |
+
+`[reg]` defaults to `+`.
 
 ## ⚡️ Requirements
 
-- **[Neovim](https://github.com/neovim/neovim)** ≥ 0.12.2
-- **[curl](https://curl.se/)**: every request is a `curl` subprocess
-- An OpenAI-compatible server serving `POST /v1/completions` — [`llama-server`](https://github.com/ggml-org/llama.cpp), [vLLM](https://github.com/vllm-project/vllm) and LM Studio all work
+- **[Neovim](https://github.com/neovim/neovim)** 0.12.2 or later
+- **[curl](https://curl.se/)**: every `:HiveBare` request is a `curl` subprocess
+- A server with Mistral's `POST /v1/fim/completions`, such as `https://api.mistral.ai` with `codestral-latest`
+- Treesitter parsers for the languages you select in, a language server for `:HiveContext symbol`, and **[git](https://git-scm.com/)** for `:HiveContext diff`
+- **[Node.js](https://nodejs.org/)**, for `:Hive` when the agent lands
 
 For development, also: **[StyLua](https://github.com/JohnnyMorganz/StyLua)**, **[LuaLS](https://github.com/LuaLS/lua-language-server)**, **[git](https://git-scm.com/)** and **[Make](https://www.gnu.org/software/make/)**. Optionally **[lazydev.nvim](https://github.com/folke/lazydev.nvim)**.
 
@@ -57,8 +116,12 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
 ```lua
 {
   "brichar01/hive.nvim",
-  cmd = "Hive",
-  opts = {},
+  cmd = { "HiveBare", "HiveContext" },
+  opts = {
+    base_url = "https://api.mistral.ai",
+    model = "codestral-latest",
+    api_key_env = "MISTRAL_API_KEY",
+  },
 }
 ```
 
@@ -68,25 +131,39 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 ```lua
 -- Async: the callback runs via vim.schedule(), so buffers and windows are safe.
-require("hive").completions("The capital of France is", 16, function(err, out)
+require("hive").completions("def add(a, b):\n    ", "\n    return total", 64, function(err, out)
   if err then
     return vim.notify(err, vim.log.levels.ERROR)
   end
   vim.notify(out.text)
 end)
 
--- Blocking: returns (err, completion).
-local err, out = require("hive").completions("2 + 2 =", 8)
+-- Blocking: returns (err, completion). An empty suffix puts the cursor at the end.
+local err, out = require("hive").completions("2 + 2 =", "", 8)
 print(err or out.text)
 ```
 
-The completion table carries `text`, `finish_reason`, `usage` and `raw` (the decoded response body, verbatim). Exactly one of `err` and `out` is ever set.
+The completion table carries `text`, `finish_reason`, `usage` and `raw` (the decoded
+response body, verbatim). Exactly one of `err` and `out` is set.
 
 From the command line:
 
 ```vim
-:Hive complete The capital of France is
-:checkhealth hive
+:HiveBare complete The capital of France is
+:HiveBare fim 128
+:HiveBare health
+:'<,'>HiveContext outline a
+:HiveContext diff rev=main
+```
+
+Map keys to the commands in your own config. Use `<Cmd>` in normal mode, and `:` in
+visual mode so the command gets the range:
+
+```lua
+vim.keymap.set("n", "vsm", "<Cmd>HiveContext select method<CR>")
+vim.keymap.set("x", "vsm", ":HiveContext select method<CR>")
+vim.keymap.set("x", "<C-Left>", ":HiveContext select parent<CR>")
+vim.keymap.set("n", "<leader>nf", "<Cmd>HiveBare fim<CR>")
 ```
 
 ### Configuration
@@ -174,12 +251,22 @@ Full documentation lives in [`:help hive`](https://github.com/brichar01/hive.nvi
 | Module | Role |
 | --- | --- |
 | `hive` | Public entry point (`setup`, `completions`) |
-| `hive.api` | OpenAI endpoint bindings — builds the request, decodes the response |
-| `hive.curl` | Transport: builds a `curl` argv, runs it via `vim.system()`, returns `{ status, body }` |
-| `hive.config` | Hard-coded defaults and validation |
+| `hive.config` | Defaults, validation and API key resolution |
+| `hive.endpoint` | Classifies `base_url`: loopback, TLS or remote plaintext |
 | `hive.health` | `:checkhealth hive` |
+| `hive.direct.api` | Endpoint bindings: builds the request, decodes the response |
+| `hive.direct.curl` | Transport: builds a `curl` argv, runs it with `vim.system()`, returns `{ status, body }` |
+| `hive.context.selection` | Treesitter node types for each language, and node selection |
+| `hive.context.format` | Splits a node's text at the cursor |
+| `hive.context.gather` | Outlines, and definitions and usages from LSP |
+| `hive.context.diff` | `git diff` of a file |
+| `hive.context.path` | Buffer paths and `<path>:<line>` references |
+| `hive.workbench` | The project's Markdown workbench files |
 
-`hive.curl` knows nothing about OpenAI. The request body goes to curl's stdin (`--data-binary @-`) so large prompts never hit the command line, and the HTTP status is recovered from `--write-out` behind a marker, keeping the body byte-exact.
+`hive.direct.curl` knows nothing about the endpoints. The request body goes to
+curl's stdin (`--data-binary @-`) so large prompts never reach the command line.
+The HTTP status comes back from `--write-out` behind a marker, so the body stays
+byte-exact.
 
 ## 🧪 Development
 

@@ -29,24 +29,23 @@ end
 ---Report how the server is addressed and what protects the connection
 local function check_endpoint()
   local Config = require("hive.config")
-  local Curl = require("hive.curl")
 
-  local scheme, host = Config.base_url:match("^(%a[%w+.-]*)://([^/:]+)")
-  if not scheme then
-    vim.health.error(("base_url is not a URL: %s"):format(Config.base_url))
+  local err, transport = require("hive.endpoint").transport(Config.base_url)
+  if err then
+    vim.health.error("base_url is " .. err)
     return
   end
+  ---@cast transport Hive.Endpoint.Transport
 
-  local loopback = host == "localhost" or host == "127.0.0.1" or host == "::1"
   local token = Config.resolve_api_key()
 
-  if loopback then
-    vim.health.ok(("server is on this machine (%s)"):format(host))
-  elseif scheme == "https" then
-    vim.health.ok(("server is remote (%s) over verified TLS"):format(host))
+  if transport.loopback then
+    vim.health.ok(("server is on this machine (%s)"):format(transport.host))
+  elseif not transport.plaintext then
+    vim.health.ok(("server is remote (%s) over verified TLS"):format(transport.host))
   else
     vim.health.warn(
-      ("%s is remote and the connection is plaintext"):format(host),
+      ("%s is remote and the connection is plaintext"):format(transport.host),
       "Prompts carry your source code. Use https://, or keep the server on a trusted segment."
     )
   end
@@ -74,7 +73,7 @@ end
 ---Check that the configured server answers, and that it serves the configured model
 local function check_server()
   local Config = require("hive.config")
-  local Api = require("hive.api")
+  local Api = require("hive.direct.api")
 
   local err, models = Api.models(5)
   if err then
