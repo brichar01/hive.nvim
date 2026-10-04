@@ -10,11 +10,14 @@ import {
   type CreateModelRuntimeOptions,
   createReadToolDefinition,
   createWriteToolDefinition,
+  DefaultResourceLoader,
   defineTool,
+  getAgentDir,
   ModelRuntime,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { diagnosticsExtension } from "./diagnostics.ts";
 import { createLogger } from "./log.ts";
 import { createNvimOperations } from "./nvim_ops.ts";
 import type { NvimConnection } from "./nvim_wrapper.ts";
@@ -173,6 +176,15 @@ async function createSession(
 
   const { cwd } = request;
   const ops = createNvimOperations(nvim);
+  const settingsManager = SettingsManager.inMemory(options.settings);
+  const resourceLoader = new DefaultResourceLoader({
+    cwd,
+    agentDir: options.agentDir ?? getAgentDir(),
+    settingsManager,
+    extensionFactories: [{ name: "hive-diagnostics", factory: diagnosticsExtension(nvim, cwd) }],
+  });
+  await resourceLoader.reload();
+
   const { session } = await createAgentSession({
     cwd,
     agentDir: options.agentDir,
@@ -187,11 +199,12 @@ async function createSession(
       defineTool(createFindToolDefinition(cwd)),
       defineTool(createLsToolDefinition(cwd)),
     ],
+    resourceLoader,
     modelRuntime: runtime,
     model: options.baseUrl ? { ...model, baseUrl: options.baseUrl } : model,
     thinkingLevel: request.thinking,
     sessionManager: SessionManager.inMemory(request.cwd),
-    settingsManager: SettingsManager.inMemory(options.settings),
+    settingsManager,
   });
   return session;
 }
