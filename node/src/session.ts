@@ -18,6 +18,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { diagnosticsExtension } from "./diagnostics.ts";
+import { type ArgsOf, hint, type HintMessage } from "./hint.ts";
 import { createLogger } from "./log.ts";
 import { createNvimOperations } from "./nvim_ops.ts";
 import type { NvimConnection } from "./nvim_wrapper.ts";
@@ -45,6 +46,13 @@ export function isThinkingLevel(value: string): value is ThinkingLevel {
   return (THINKING_LEVELS as readonly string[]).includes(value);
 }
 
+/** Every tool a session registers. Matches `tools` in lua/hive/config.lua. */
+export const TOOLS = ["read", "write", "edit", "bash", "grep", "find", "ls", "read_disk", "write_disk"] as const;
+
+export function isTool(value: string): boolean {
+  return (TOOLS as readonly string[]).includes(value);
+}
+
 /** What Neovim sends with each prompt. */
 export interface PromptRequest {
   text: string;
@@ -52,6 +60,8 @@ export interface PromptRequest {
   thinking: ThinkingLevel;
   workbench: string;
   cwd: string;
+  /** The active tools, from `TOOLS`. */
+  tools: string[];
 }
 
 /** The subset of Pi's events that Neovim renders. */
@@ -59,13 +69,14 @@ export interface PromptRequest {
 export type TaggedRole = "user" | "assistant" | "toolResult";
 
 export type ForwardedEvent =
-  /** `text` is a tool result's output, which arrives whole. */
-  | { type: "message_start"; role: TaggedRole; text?: string }
-  | { type: "message_end"; role: TaggedRole; id: string }
+  /** `text` is a tool result's output, which arrives whole. `call` is its tool call's id. */
+  | { type: "message_start"; role: TaggedRole; text?: string; call?: string }
+  /** `hint` says what the message holds, for its entry tag. */
+  | { type: "message_end"; role: TaggedRole; id: string; hint: string }
   | { type: "text"; delta: string }
   | { type: "thinking"; delta: string }
   | { type: "thinking_end" }
-  | { type: "tool_start"; name: string; args: unknown }
+  | { type: "tool_start"; call: string; name: string; args: unknown }
   | { type: "tool_end"; name: string; isError: boolean }
   | { type: "end"; error?: string };
 
@@ -124,64 +135,145 @@ const isTagged = (role: string): role is TaggedRole =>
  * Keep the events Neovim renders, in the shape `on_event` reads.
  *
  * `idOf` finds a message's session entry. Pi saves a message after its `message_end`
- * listeners run, so call this once the listener has returned.
+ * listeners run, so call this once the listener has returned. `argsOf` finds a tool
+ * call's arguments, for a tool result's hint.
  */
+function handleMessageStart(event: {
+  type: "message_start";
+  message: {
+    role: string;
+    content?: string | Array<{ type: string; text?: string }>;
+    toolCallId?: string;
+  };
+}): ForwardedEvent | undefined {
+  const { message } = event;
+  if (message.role === "toolResult" && message.content) {
+    const content =
+      typeof message.content === "string"
+        ? [{ type: "text", text: message.content }]
+        : message.content;
+    const text = content
+      .flatMap((c) => (c.type === "text" ? [c.text] : []))
+      .filter((text): text is string => text !== undefined)
+      .join("\n");
+    return {
+      type: "message_start",
+      role: "toolResult",
+      text,
+      call: message.toolCallId,
+    };
+  }
+  return message.role === "assistant"
+    ? { type: "message_start", role: "assistant" }
+    : undefined;
+}
+
+function handleMessageEnd(
+  event: { type: "message_end"; message: HintMessage },
+  idOf: (message: object) => string | undefined,
+  argsOf: ArgsOf,
+): ForwardedEvent | undefined {
+  const id = idOf(event.message);
+  return isTagged(event.message.role) && id
+    ? {
+        type: "message_end",
+        role: event.message.role,
+        id,
+        hint: hint(event.message, argsOf),
+      }
+    : undefined;
+}
+
+function handleMessageUpdate(event: {
+  type: "message_update";
+  assistantMessageEvent: { type: string; delta?: string };
+}): ForwardedEvent | undefined {
+  const update = event.assistantMessageEvent;
+  switch (update.type) {
+    case "text_delta":
+      return { type: "text", delta: update.delta || "" };
+    case "thinking_delta":
+      return { type: "thinking", delta: update.delta || "" };
+    case "thinking_end":
+      return { type: "thinking_end" };
+    default:
+      return undefined;
+  }
+}
+
+function handleToolExecutionStart(event: {
+  type: "tool_execution_start";
+  toolCallId: string;
+  toolName: string;
+  args: unknown;
+}): ForwardedEvent {
+  return {
+    type: "tool_start",
+    call: event.toolCallId,
+    name: event.toolName,
+    args: event.args,
+  };
+}
+
+function handleToolExecutionEnd(event: {
+  type: "tool_execution_end";
+  toolName: string;
+  isError: boolean;
+}): ForwardedEvent {
+  return { type: "tool_end", name: event.toolName, isError: event.isError };
+}
+
+function handleAgentEnd(event: {
+  type: "agent_end";
+  willRetry: boolean;
+  messages: Array<{ role: string; errorMessage?: string }>;
+}): ForwardedEvent | undefined {
+  if (event.willRetry) {
+    return undefined;
+  }
+  const last = event.messages.findLast((m) => m.role === "assistant");
+  const error = last?.errorMessage;
+  return error ? { type: "end", error } : { type: "end" };
+}
+
 export function forward(
   event: AgentSessionEvent,
   idOf: (message: object) => string | undefined,
+  argsOf: ArgsOf = () => undefined,
 ): ForwardedEvent | undefined {
   switch (event.type) {
-    case "message_start": {
-      const { message } = event;
-      // Neovim marks where a user message starts when it sends the prompt.
-      if (message.role === "toolResult") {
-        const text = message.content
-          .flatMap((c) => (c.type === "text" ? [c.text] : []))
-          .join("\n");
-        return { type: "message_start", role: "toolResult", text };
-      }
-      return message.role === "assistant"
-        ? { type: "message_start", role: "assistant" }
-        : undefined;
-    }
-    case "message_end": {
-      const id = idOf(event.message);
-      return isTagged(event.message.role) && id
-        ? { type: "message_end", role: event.message.role, id }
-        : undefined;
-    }
-    case "message_update": {
-      const update = event.assistantMessageEvent;
-      switch (update.type) {
-        case "text_delta":
-          return { type: "text", delta: update.delta };
-        case "thinking_delta":
-          return { type: "thinking", delta: update.delta };
-        case "thinking_end":
-          return { type: "thinking_end" };
-        default:
-          return undefined;
-      }
-    }
+    case "message_start":
+      return handleMessageStart(event);
+    case "message_end":
+      return handleMessageEnd(event, idOf, argsOf);
+    case "message_update":
+      return handleMessageUpdate(event);
     case "tool_execution_start":
-      return {
-        type: "tool_start",
-        name: event.toolName,
-        args: event.args as unknown,
-      };
+      return handleToolExecutionStart(event);
     case "tool_execution_end":
-      return { type: "tool_end", name: event.toolName, isError: event.isError };
-    case "agent_end": {
-      if (event.willRetry) {
-        return undefined;
-      }
-      const last = event.messages.findLast((m) => m.role === "assistant");
-      const error =
-        last && "errorMessage" in last ? last.errorMessage : undefined;
-      return error ? { type: "end", error } : { type: "end" };
-    }
+      return handleToolExecutionEnd(event);
+    case "agent_end":
+      return handleAgentEnd(event);
     default:
       return undefined;
+  }
+}
+
+/** Pi's own tool under `name`, which reads or writes the file on disk instead of Neovim's buffer. */
+function onDisk<T extends { name: string; label: string; description: string }>(tool: T, name: string): T {
+  return {
+    ...tool,
+    name,
+    label: name,
+    description: `${tool.description} Works on the file on disk and ignores unsaved changes in Neovim's buffers.`,
+  };
+}
+
+/** Make `tools` the active set. Each change adds to the transcript, so an unchanged set is left alone. */
+function setTools(session: AgentSession, tools: readonly string[]): void {
+  const active = session.getActiveToolNames();
+  if (active.length !== tools.length || tools.some((tool) => !active.includes(tool))) {
+    session.setActiveToolsByName([...tools]);
   }
 }
 
@@ -232,6 +324,8 @@ async function createSession(
       defineTool(createGrepToolDefinition(cwd)),
       defineTool(createFindToolDefinition(cwd)),
       defineTool(createLsToolDefinition(cwd)),
+      defineTool(onDisk(createReadToolDefinition(cwd), "read_disk")),
+      defineTool(onDisk(createWriteToolDefinition(cwd), "write_disk")),
     ],
     resourceLoader,
     modelRuntime: runtime,
@@ -293,11 +387,13 @@ export function createSessions(
     const current = workbenches.get(request.workbench);
     if (current?.model === request.model) {
       current.session.setThinkingLevel(request.thinking);
+      setTools(current.session, request.tools);
       return current;
     }
     current?.session.dispose();
 
     const session = await createSession(nvim, request, apiKey, options);
+    setTools(session, request.tools);
     const idOf = (message: object): string | undefined =>
       session.sessionManager
         .getBranch()
@@ -305,11 +401,19 @@ export function createSessions(
           (entry) => entry.type === "message" && entry.message === message,
         )?.id;
 
+    const argsOf = (callId: string): unknown =>
+      session.messages
+        .flatMap((m) => (m.role === "assistant" ? m.content : []))
+        .flatMap((c) =>
+          c.type === "toolCall" && c.id === callId ? [c.arguments] : [],
+        )
+        .at(-1);
+
     // Each event is forwarded a microtask after its listener, in order, so a message_end sees its saved entry.
     let queue = Promise.resolve();
     session.subscribe((event) => {
       queue = queue.then(() => {
-        const forwarded = forward(event, idOf);
+        const forwarded = forward(event, idOf, argsOf);
         if (forwarded) {
           send(nvim, forwarded);
         }

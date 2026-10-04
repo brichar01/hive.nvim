@@ -1,14 +1,16 @@
 import { type NvimConnection } from "./nvim_wrapper.ts";
 import {
   isThinkingLevel,
+  isTool,
   type PromptRequest,
   type Sessions,
   THINKING_LEVELS,
+  TOOLS,
 } from "./session.ts";
 
 export type Handler = (nvim: NvimConnection, args: unknown[]) => Promise<void>;
 
-/** Read the `{text, model, thinking, workbench, cwd}` table Lua sends with `prompt`. */
+/** Read the `{text, model, thinking, workbench, cwd, tools}` table Lua sends with `prompt`. */
 export function parsePromptRequest(arg: unknown): PromptRequest {
   const fields = (typeof arg === "object" && arg !== null ? arg : {}) as Record<
     string,
@@ -27,13 +29,18 @@ export function parsePromptRequest(arg: unknown): PromptRequest {
       `prompt: thinking must be one of ${THINKING_LEVELS.join(", ")}, got ${thinking}`,
     );
   }
-  return {
+  const request = {
     text: field("text"),
     model: field("model"),
     thinking,
     workbench: field("workbench"),
     cwd: field("cwd"),
   };
+  const { tools } = fields;
+  if (!Array.isArray(tools) || !tools.every((tool) => typeof tool === "string" && isTool(tool))) {
+    throw new Error(`prompt: tools must be a list of ${TOOLS.join(", ")}`);
+  }
+  return { ...request, tools: tools as string[] };
 }
 
 export function createHandlers(sessions: Sessions): Record<string, Handler> {

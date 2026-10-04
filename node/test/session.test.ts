@@ -26,6 +26,7 @@ interface StubBody {
   model?: string;
   reasoning_effort?: string;
   messages?: { role: string }[];
+  tools?: { function: { name: string } }[];
 }
 
 let requests: {
@@ -100,6 +101,7 @@ const request = (text: string): PromptRequest => ({
   thinking: "off",
   workbench: "project-20261004000000",
   cwd: sandbox,
+  tools: ["read", "write", "edit", "bash", "grep", "find", "ls"],
 });
 
 const options = (extra: SessionOptions = {}): SessionOptions => ({
@@ -128,11 +130,11 @@ test("a prompt streams text deltas and ends", async () => {
   const ids = events.flatMap((e) => (e.type === "message_end" ? [e.id] : []));
   assert.equal(ids.length, 2);
   assert.deepEqual(events, [
-    { type: "message_end", role: "user", id: ids[0] },
+    { type: "message_end", role: "user", id: ids[0], hint: "hello" },
     { type: "message_start", role: "assistant" },
     { type: "text", delta: "Hel" },
     { type: "text", delta: "lo" },
-    { type: "message_end", role: "assistant", id: ids[1] },
+    { type: "message_end", role: "assistant", id: ids[1], hint: "Hello" },
     { type: "end" },
   ]);
   assert.deepEqual(
@@ -210,6 +212,24 @@ test("a thinking change keeps the session and its history", async () => {
   );
 });
 
+test("the request's tools are the active tools, and a change keeps the session", async () => {
+  const { nvim } = fakeNvim();
+  const sessions = createSessions("k", options());
+  await sessions.prompt(nvim, request("one"));
+  await sessions.prompt(nvim, { ...request("two"), tools: ["read_disk", "bash"] });
+
+  assert.deepEqual(
+    requests.map((r) => [
+      r.body.tools?.map((t) => t.function.name).sort(),
+      r.body.messages?.filter((m) => m.role !== "system").length,
+    ]),
+    [
+      [["bash", "edit", "find", "grep", "ls", "read", "write"], 1],
+      [["bash", "read_disk"], 3],
+    ],
+  );
+});
+
 test("a model change starts a new session", async () => {
   const { nvim } = fakeNvim();
   const sessions = createSessions("k", options());
@@ -265,6 +285,7 @@ test("forward passes thinking through, and a tool result's text with its start",
         type: "message_start",
         message: {
           role: "toolResult",
+          toolCallId: "c1",
           content: [
             { type: "text", text: "a" },
             { type: "image" },
@@ -274,6 +295,6 @@ test("forward passes thinking through, and a tool result's text with its start",
       } as never,
       none,
     ),
-    { type: "message_start", role: "toolResult", text: "a\nb" },
+    { type: "message_start", role: "toolResult", text: "a\nb", call: "c1" },
   );
 });

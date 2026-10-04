@@ -36,6 +36,7 @@ test("prompt request maps the Lua field names", () => {
     thinking: "low",
     workbench: "p-1",
     cwd: "/w",
+    tools: ["read", "read_disk"],
   });
   assert.deepEqual(request, {
     text: "hi",
@@ -43,7 +44,23 @@ test("prompt request maps the Lua field names", () => {
     thinking: "low",
     workbench: "p-1",
     cwd: "/w",
+    tools: ["read", "read_disk"],
   });
+});
+
+test("prompt request rejects an unknown tool", () => {
+  assert.throws(
+    () =>
+      parsePromptRequest({
+        text: "hi",
+        model: "m",
+        thinking: "low",
+        workbench: "p-1",
+        cwd: "/w",
+        tools: ["read", "rm"],
+      }),
+    /tools must be a list of/,
+  );
 });
 
 test("prompt request rejects a missing field", () => {

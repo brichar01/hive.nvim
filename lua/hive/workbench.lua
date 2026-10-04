@@ -34,6 +34,14 @@ local function open_workbench(path)
   vim.bo.filetype = "markdown"
 end
 
+---Open `path` with every message folded.
+---@param path string
+local function open_folded(path)
+  open_workbench(path)
+  require("hive.ui").set_folds(0)
+  vim.cmd("normal! zM")
+end
+
 local function new_path()
   local name = workbench_slug() .. "-" .. os.date("%Y%m%d%H%M%S") .. ".md"
 
@@ -73,7 +81,7 @@ local function step_workbench(step)
     if vim.fs.normalize(path) == current then
       local target = existing[i + step]
       if target then
-        open_workbench(target)
+        open_folded(target)
       end
       return
     end
@@ -90,7 +98,7 @@ M.actions = {
   open = function()
     local latest = latest_workbench()
     if latest then
-      open_workbench(latest)
+      open_folded(latest)
     else
       new_workbench()
     end

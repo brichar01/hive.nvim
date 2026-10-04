@@ -338,31 +338,44 @@ local agent_cmds = {
     end,
   },
 
-  -- Override the agent's `model` or `thinking` level until Neovim exits. With no value, show the current one.
+  -- Override the agent's `model`, `thinking` level or active `tools` until Neovim exits. With no value, show the
+  -- current one.
   set = {
     impl = function(args)
       local Util = require("hive.util")
       local Agent = require("hive.agent")
-      local setters = { model = Agent.set_model, thinking = Agent.set_thinking }
-      local key, value = args[1], args[2]
+      local setters = {
+        model = function(values)
+          return Agent.set_model(values[1])
+        end,
+        thinking = function(values)
+          return Agent.set_thinking(values[1])
+        end,
+        tools = Agent.set_tools,
+      }
+      local key, values = args[1], vim.list_slice(args, 2)
       local setter = key and setters[key]
       if not setter then
-        return Util.error(("Hive set: expected model or thinking, got %s"):format(key or "<none>"))
+        return Util.error(("Hive set: expected model, thinking or tools, got %s"):format(key or "<none>"))
       end
-      if value then
-        local err = setter(value)
+      if #values > 0 then
+        local err = setter(values)
         if err then
           return Util.error("Hive set: " .. err)
         end
       end
-      Util.info(("%s: %s"):format(key, Agent.settings()[key]))
+      local value = Agent.settings()[key]
+      Util.info(("%s: %s"):format(key, type(value) == "table" and table.concat(value, " ") or value))
     end,
     complete = function(arg_lead, args)
       if #args == 0 then
-        return complete_from({ "model", "thinking" })(arg_lead)
+        return complete_from({ "model", "thinking", "tools" })(arg_lead)
       end
       if #args == 1 and args[1] == "thinking" then
         return complete_from(require("hive.config").thinking_levels)(arg_lead)
+      end
+      if args[1] == "tools" then
+        return complete_from(require("hive.config").tools)(arg_lead)
       end
       return {}
     end,

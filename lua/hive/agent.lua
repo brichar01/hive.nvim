@@ -171,13 +171,17 @@ function M.notify(method, ...)
 end
 
 ---Run-time values set by `:Hive set`, ahead of `agent` in the config.
----@type { model?: string, thinking?: Hive.ThinkingLevel }
+---@type { model?: string, thinking?: Hive.ThinkingLevel, tools?: string[] }
 local overrides = {}
 
----@return { model: string, thinking: Hive.ThinkingLevel } the model and thinking level the next prompt uses
+---@return { model: string, thinking: Hive.ThinkingLevel, tools: string[] } what the next prompt uses
 function M.settings()
   local agent = require("hive.config").agent
-  return { model = overrides.model or agent.model, thinking = overrides.thinking or agent.thinking }
+  return {
+    model = overrides.model or agent.model,
+    thinking = overrides.thinking or agent.thinking,
+    tools = overrides.tools or agent.tools,
+  }
 end
 
 ---Override the model for later prompts. A different model starts a new session on the next prompt.
@@ -201,6 +205,17 @@ function M.set_thinking(level)
   overrides.thinking = level --[[@as Hive.ThinkingLevel]]
 end
 
+---Override the active tools for later prompts. The session and its history carry over.
+---@param tools string[]
+---@return string|nil err
+function M.set_tools(tools)
+  local err = require("hive.config").check_tools(tools)
+  if err then
+    return err
+  end
+  overrides.tools = tools
+end
+
 ---@param text string
 ---@param path string workbench file
 ---@return string|nil err
@@ -210,6 +225,7 @@ local function send(text, path)
     text = text,
     model = settings.model,
     thinking = settings.thinking,
+    tools = settings.tools,
     workbench = vim.fn.fnamemodify(path, ":t:r"),
     cwd = vim.fn.getcwd(),
   })
@@ -257,6 +273,8 @@ end
 ---@field text? string a tool result's output, on its message_start
 ---@field role? "user"|"assistant"|"toolResult"
 ---@field id? string session entry id
+---@field hint? string what the message holds, on its message_end
+---@field call? string tool call id, on a tool_start and its tool result's message_start
 ---@field delta? string
 ---@field name? string
 ---@field args? any
@@ -268,11 +286,15 @@ function M.on_event(event)
   local ui = require("hive.ui")
   if event.type == "message_start" then
     ui.mark_start(event.role)
+    local call = event.call and ui.take_call(event.call)
+    if call then
+      ui.append(call .. "\n")
+    end
     if event.text and event.text ~= "" then
       ui.append(event.text)
     end
   elseif event.type == "message_end" then
-    ui.tag(event.role, event.id)
+    ui.tag(event.role, event.id, event.hint)
   elseif event.type == "text" then
     ui.append_reply(event.delta)
   elseif event.type == "thinking" then
@@ -280,9 +302,7 @@ function M.on_event(event)
   elseif event.type == "thinking_end" then
     ui.append("\n")
   elseif event.type == "tool_start" then
-    ui.append(("\n`%s %s`\n"):format(event.name, vim.json.encode(event.args)))
-  elseif event.type == "tool_end" and event.isError then
-    ui.append(("`%s failed`\n"):format(event.name))
+    ui.add_call(event.call, ("`%s %s`"):format(event.name, vim.json.encode(event.args)))
   elseif event.type == "end" then
     if event.error then
       ui.append("\n**Error:** " .. event.error)

@@ -192,6 +192,11 @@ from `agent.api_key`, then `$MISTRAL_API_KEY` (renameable via `agent.api_key_env
 `max`, and `medium` by default. Pi lowers it to what the model supports, so a model
 without reasoning runs at `off`.
 
+`agent.tools` lists the active tools. By default these are `read`, `write`, `edit`,
+`bash`, `grep`, `find` and `ls`. `read`, `write` and `edit` use Neovim's buffers.
+`read_disk` and `write_disk` are Pi's own read and write, which use the file on disk
+and ignore unsaved changes. They are off by default.
+
 ```lua
 require("hive").setup({
   agent = {
@@ -207,20 +212,26 @@ The conversation goes into the project's newest workbench, the same one
 `:HiveContext workbench new` starts a new conversation. Neovim does not save the
 workbench for you.
 
-Each message in the workbench sits between `<!-- hive:entry <id> -->` and
+Each message in the workbench sits between `<!-- hive:entry <id> <hint> -->` and
 `<!-- hive:end <id> -->`. The id is the message's entry in the agent session. The
-workbench window folds on these tags. Tool results, and agent messages with only
+hint says what the message holds, so a closed fold shows it. For a prompt or a reply
+it is the first 20 characters of its text. For a tool it is what the call acted on
+and what it found, such as `read lua/hive/ui.lua:20-60`, `grep "set_folds" lua/: 4 matches`
+or `bash npm test (exit 1)`. The workbench window folds on these tags. Each tool
+call is in the same fold as its result. Tool results, and agent messages with only
 thinking or a tool call, start closed. To chat in the workbench itself, write below the last `hive:end` tag and run
 `:Hive chat`. It sends that text as the prompt and appends the reply below it.
 
-To change either value until Neovim exits, use `:Hive set`. A new model starts a new
-session, and the conversation history is lost. A new thinking level keeps the session.
-With no value, `:Hive set` shows the current one.
+To change the model, thinking level or tools until Neovim exits, use `:Hive set`. A
+new model starts a new session, and the conversation history is lost. A new thinking
+level or tool list keeps the session. `:Hive set tools` replaces the whole list. With
+no value, `:Hive set` shows the current one.
 
 ```vim
 :Hive set model mistral-small-latest
 :Hive set thinking high
 :Hive set thinking
+:Hive set tools read_disk write_disk edit bash grep find ls
 ```
 
 #### Pointing it at another machine

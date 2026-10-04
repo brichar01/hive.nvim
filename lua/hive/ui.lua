@@ -16,15 +16,32 @@ local buf = nil
 ---@type table<string, Hive.Ui.Pending>
 local pending = {}
 
+---@class Hive.Ui.Call
+---@field mark integer extmark on the call's line
+---@field line string
+
+---Running tool calls, by tool call id. Each line moves into its result's fold.
+---@type table<string, Hive.Ui.Call>
+local calls = {}
+
 local END_TAG = "^<!%-%- hive:end (%S+) %-%->$"
+
+local FOLDMARKER = "hive:entry,hive:end"
 
 ---Fold each message between its entry and end tags, all open to start with.
 ---@param win integer
-local function set_folds(win)
+function M.set_folds(win)
   local wo = vim.wo[win][0]
   wo.foldmethod = "marker"
-  wo.foldmarker = "hive:entry,hive:end"
+  wo.foldmarker = FOLDMARKER
   wo.foldlevel = 99
+end
+
+---@param win integer
+---@return boolean folded true when `win` already folds the messages
+local function has_folds(win)
+  local wo = vim.wo[win][0]
+  return wo.foldmethod == "marker" and wo.foldmarker == FOLDMARKER
 end
 
 ---@param path string
@@ -42,11 +59,14 @@ local function load(path)
       group = require("hive.config").augroup,
       buffer = b,
       callback = function()
-        set_folds(vim.api.nvim_get_current_win())
+        M.set_folds(vim.api.nvim_get_current_win())
       end,
     })
+    -- A window the workbench actions opened keeps its folds closed.
     for _, win in ipairs(vim.fn.win_findbuf(b)) do
-      set_folds(win)
+      if not has_folds(win) then
+        M.set_folds(win)
+      end
     end
   end
   return b
@@ -60,6 +80,7 @@ function M.open()
   local path = require("hive.workbench").current()
   buf = load(path)
   pending = {}
+  calls = {}
 
   if vim.fn.bufwinid(buf) == -1 then
     vim.cmd("vsplit")
@@ -157,11 +178,47 @@ local function take(mark)
   return row
 end
 
----Wrap the `role` message in `<!-- hive:entry <id> -->` and `<!-- hive:end <id> -->`. A tool
----result, or an assistant message with no reply text, starts as a closed fold.
+---Show a tool call on its own line while it runs.
+---@param id string tool call id
+---@param line string
+function M.add_call(id, line)
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    M.open()
+  end
+  ---@cast buf integer
+
+  local _, tail = last_line()
+  M.append((tail == "" and "" or "\n") .. line .. "\n")
+  local row = last_line() - 1
+  calls[id] = { mark = vim.api.nvim_buf_set_extmark(buf, require("hive.config").ns, row, 0, {}), line = line }
+end
+
+---Remove a tool call's line, for its result to write again inside its own fold.
+---
+--- Results arrive after every call in the batch has started, so a call's line
+--- would otherwise sit outside its result's fold.
+---@param id string tool call id
+---@return string|nil line nil for a call not shown with `add_call`
+function M.take_call(id)
+  local call = calls[id]
+  calls[id] = nil
+  if not (call and buf and vim.api.nvim_buf_is_valid(buf)) then
+    return nil
+  end
+  local row = take(call.mark)
+  if row then
+    vim.api.nvim_buf_set_lines(buf, row, row + 1, false, {})
+  end
+  return call.line
+end
+
+---Wrap the `role` message in `<!-- hive:entry <id> <hint> -->` and `<!-- hive:end <id> -->`.
+---The hint is the text a closed fold shows. A tool result, or an assistant message with no
+---reply text, starts as a closed fold.
 ---@param role string
 ---@param id string session entry id
-function M.tag(role, id)
+---@param hint? string what the message holds
+function M.tag(role, id, hint)
   if not (buf and vim.api.nvim_buf_is_valid(buf)) then
     return
   end
@@ -182,7 +239,8 @@ function M.tag(role, id)
   if not start then
     return
   end
-  vim.api.nvim_buf_set_lines(buf, start, start, false, { ("<!-- hive:entry %s -->"):format(id) })
+  local entry = hint and hint ~= "" and ("%s %s"):format(id, hint) or id
+  vim.api.nvim_buf_set_lines(buf, start, start, false, { ("<!-- hive:entry %s -->"):format(entry) })
 
   -- Set either way: after one fold is closed by hand, Neovim creates new folds closed.
   local closed = role == "toolResult" or (role == "assistant" and p and not p.text)

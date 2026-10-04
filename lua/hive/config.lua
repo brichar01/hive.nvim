@@ -32,6 +32,8 @@ local defaults = {
     model = "codestral-latest",
     -- Pi's default. Pi clamps it to what the model supports, so a model without reasoning runs at "off".
     thinking = "medium",
+    -- `read_disk` and `write_disk` are Pi's own read and write, which skip Neovim's buffers.
+    tools = { "read", "write", "edit", "bash", "grep", "find", "ls" },
     ---@type string|fun(): string|nil
     api_key = nil,
     api_key_env = "MISTRAL_API_KEY",
@@ -40,6 +42,19 @@ local defaults = {
 
 -- Matches `THINKING_LEVELS` in node/src/session.ts.
 M.thinking_levels = { "off", "minimal", "low", "medium", "high", "xhigh", "max" }
+
+-- Matches `TOOLS` in node/src/session.ts.
+M.tools = { "read", "write", "edit", "bash", "grep", "find", "ls", "read_disk", "write_disk" }
+
+---@param tools string[]
+---@return string|nil err for a name not in `M.tools`
+function M.check_tools(tools)
+  for _, tool in ipairs(tools) do
+    if not vim.list_contains(M.tools, tool) then
+      return ("unknown tool %s, expected some of %s"):format(tool, table.concat(M.tools, ", "))
+    end
+  end
+end
 
 -- Access config values directly: Config.base_url
 local config = vim.deepcopy(defaults)
@@ -121,6 +136,9 @@ function M.setup(opts)
     vim.validate("agent.thinking", config.agent.thinking, function(level)
       return vim.list_contains(M.thinking_levels, level)
     end, table.concat(M.thinking_levels, "|"))
+    vim.validate("agent.tools", config.agent.tools, function(tools)
+      return vim.islist(tools) and M.check_tools(tools) == nil
+    end, "list of " .. table.concat(M.tools, "|"))
     vim.validate("agent.api_key", config.agent.api_key, { "string", "function" }, true)
     vim.validate("agent.api_key_env", config.agent.api_key_env, "string")
 

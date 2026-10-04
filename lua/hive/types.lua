@@ -25,6 +25,7 @@
 ---@class Hive.AgentOptions
 ---@field model string Mistral model id from Pi's catalogue
 ---@field thinking Hive.ThinkingLevel thinking level, clamped by Pi to what the model supports
+---@field tools string[] active tools, from `require("hive.config").tools`
 ---@field api_key string|fun(): string|nil Mistral key, or a function returning one
 ---@field api_key_env string environment variable read when `api_key` is unset
 
