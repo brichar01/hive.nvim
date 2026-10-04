@@ -1,11 +1,19 @@
 import { type NvimConnection } from "./nvim_wrapper.ts";
-import { isThinkingLevel, type PromptRequest, type Sessions, THINKING_LEVELS } from "./session.ts";
+import {
+  isThinkingLevel,
+  type PromptRequest,
+  type Sessions,
+  THINKING_LEVELS,
+} from "./session.ts";
 
 export type Handler = (nvim: NvimConnection, args: unknown[]) => Promise<void>;
 
 /** Read the `{text, model, thinking, workbench, cwd}` table Lua sends with `prompt`. */
 export function parsePromptRequest(arg: unknown): PromptRequest {
-  const fields = (typeof arg === "object" && arg !== null ? arg : {}) as Record<string, unknown>;
+  const fields = (typeof arg === "object" && arg !== null ? arg : {}) as Record<
+    string,
+    unknown
+  >;
   const field = (name: string): string => {
     const value = fields[name];
     if (typeof value !== "string" || value === "") {
@@ -15,9 +23,17 @@ export function parsePromptRequest(arg: unknown): PromptRequest {
   };
   const thinking = field("thinking");
   if (!isThinkingLevel(thinking)) {
-    throw new Error(`prompt: thinking must be one of ${THINKING_LEVELS.join(", ")}, got ${thinking}`);
+    throw new Error(
+      `prompt: thinking must be one of ${THINKING_LEVELS.join(", ")}, got ${thinking}`,
+    );
   }
-  return { text: field("text"), model: field("model"), thinking, workbench: field("workbench"), cwd: field("cwd") };
+  return {
+    text: field("text"),
+    model: field("model"),
+    thinking,
+    workbench: field("workbench"),
+    cwd: field("cwd"),
+  };
 }
 
 export function createHandlers(sessions: Sessions): Record<string, Handler> {

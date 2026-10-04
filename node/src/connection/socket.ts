@@ -10,11 +10,17 @@ import type { ConnectOptions, OnClient } from "./types.ts";
  *
  * `listen` binds the server, and decides whether it is TCP or a Unix socket.
  */
-export function serveSocket(listen: (server: net.Server) => void, onClient: OnClient, options: ConnectOptions): net.Server {
+export function serveSocket(
+  listen: (server: net.Server) => void,
+  onClient: OnClient,
+  options: ConnectOptions,
+): net.Server {
   const log = options.log ?? silent;
 
   const server = net.createServer((socket) => {
-    const nvim = createNvim(attach({ reader: socket, writer: socket, options: options.attach }));
+    const nvim = createNvim(
+      attach({ reader: socket, writer: socket, options: options.attach }),
+    );
     nvim.on("disconnect", () => socket.destroy());
     socket.on("error", (err) => {
       log.warn("socket error: %s", err.message);

@@ -2,9 +2,15 @@ import type { attach } from "neovim";
 import type { Logger } from "../log.ts";
 import type { NvimConnection } from "../nvim_wrapper.ts";
 
-export type AttachOptions = NonNullable<Parameters<typeof attach>[0]["options"]>;
+export type AttachOptions = NonNullable<
+  Parameters<typeof attach>[0]["options"]
+>;
 
-export type StdioTarget = { kind: "stdio"; reader: NodeJS.ReadableStream; writer: NodeJS.WritableStream };
+export type StdioTarget = {
+  kind: "stdio";
+  reader: NodeJS.ReadableStream;
+  writer: NodeJS.WritableStream;
+};
 export type TcpTarget = { kind: "tcp"; host: string; port: number };
 export type PipeTarget = { kind: "pipe"; path: string };
 

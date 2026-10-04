@@ -13,18 +13,24 @@ describe("parseCommandLine", () => {
   });
 
   test("--pipe takes a path", () => {
-    assert.deepEqual(parseCommandLine(["--pipe", "/tmp/hive.sock"], stdio).target, {
-      kind: "pipe",
-      path: "/tmp/hive.sock",
-    });
+    assert.deepEqual(
+      parseCommandLine(["--pipe", "/tmp/hive.sock"], stdio).target,
+      {
+        kind: "pipe",
+        path: "/tmp/hive.sock",
+      },
+    );
   });
 
   test("--tcp splits host and port", () => {
-    assert.deepEqual(parseCommandLine(["--tcp", "127.0.0.1:7777"], stdio).target, {
-      kind: "tcp",
-      host: "127.0.0.1",
-      port: 7777,
-    });
+    assert.deepEqual(
+      parseCommandLine(["--tcp", "127.0.0.1:7777"], stdio).target,
+      {
+        kind: "tcp",
+        host: "127.0.0.1",
+        port: 7777,
+      },
+    );
   });
 
   test("--tcp refuses a missing or invalid port", () => {
@@ -34,7 +40,12 @@ describe("parseCommandLine", () => {
   });
 
   test("--tcp and --pipe together are refused", () => {
-    assert.throws(() => parseCommandLine(["--tcp", "127.0.0.1:7777", "--pipe", "/tmp/hive.sock"], stdio));
+    assert.throws(() =>
+      parseCommandLine(
+        ["--tcp", "127.0.0.1:7777", "--pipe", "/tmp/hive.sock"],
+        stdio,
+      ),
+    );
   });
 
   test("a flag without a value is refused", () => {
@@ -47,12 +58,18 @@ describe("parseCommandLine", () => {
   });
 
   test("--log-level sets the level, in any position", () => {
-    const { target, level } = parseCommandLine(["--pipe", "/tmp/hive.sock", "--log-level", "debug"], stdio);
+    const { target, level } = parseCommandLine(
+      ["--pipe", "/tmp/hive.sock", "--log-level", "debug"],
+      stdio,
+    );
     assert.equal(target.kind, "pipe");
     assert.equal(level, "debug");
   });
 
   test("--log-level refuses an unknown level", () => {
-    assert.throws(() => parseCommandLine(["--log-level", "trace"], stdio), /--log-level expects one of/);
+    assert.throws(
+      () => parseCommandLine(["--log-level", "trace"], stdio),
+      /--log-level expects one of/,
+    );
   });
 });

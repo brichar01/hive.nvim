@@ -29,13 +29,25 @@ export function createLogger(source: string): Logger {
     (level: Level) =>
     (...args: unknown[]): void => {
       if (LEVELS.indexOf(level) <= LEVELS.indexOf(threshold)) {
-        process.stderr.write(`${level.toUpperCase()} ${source}: ${format(...args)}\n`);
+        process.stderr.write(
+          `${level.toUpperCase()} ${source}: ${format(...args)}\n`,
+        );
       }
     };
-  return { error: write("error"), warn: write("warn"), info: write("info"), debug: write("debug") };
+  return {
+    error: write("error"),
+    warn: write("warn"),
+    info: write("info"),
+    debug: write("debug"),
+  };
 }
 
 const noop = (): void => {};
 
 /** Drops every line. */
-export const silent: Logger = { error: noop, warn: noop, info: noop, debug: noop };
+export const silent: Logger = {
+  error: noop,
+  warn: noop,
+  info: noop,
+  debug: noop,
+};

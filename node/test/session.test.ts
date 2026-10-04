@@ -6,7 +6,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import type { NvimConnection } from "../src/nvim_wrapper.ts";
-import { createSessions, type ForwardedEvent, forward, KEY_ENV, type PromptRequest, type SessionOptions, takeApiKey } from "../src/session.ts";
+import {
+  createSessions,
+  type ForwardedEvent,
+  forward,
+  KEY_ENV,
+  type PromptRequest,
+  type SessionOptions,
+  takeApiKey,
+} from "../src/session.ts";
 
 const sandbox = mkdtempSync(join(tmpdir(), "hive-session-"));
 process.env.PI_OFFLINE = "1";
@@ -20,7 +28,11 @@ interface StubBody {
   messages?: { role: string }[];
 }
 
-let requests: { url: string | undefined; headers: IncomingHttpHeaders; body: StubBody }[] = [];
+let requests: {
+  url: string | undefined;
+  headers: IncomingHttpHeaders;
+  body: StubBody;
+}[] = [];
 let baseUrl = "";
 
 const chunk = (body: unknown): string => `data: ${JSON.stringify(body)}\n\n`;
@@ -29,10 +41,19 @@ const server = createServer((req, res) => {
   const chunks: Buffer[] = [];
   req.on("data", (data: Buffer) => chunks.push(data));
   req.on("end", () => {
-    requests.push({ url: req.url, headers: req.headers, body: JSON.parse(Buffer.concat(chunks).toString("utf-8")) as StubBody });
+    requests.push({
+      url: req.url,
+      headers: req.headers,
+      body: JSON.parse(Buffer.concat(chunks).toString("utf-8")) as StubBody,
+    });
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     for (const content of ["Hel", "lo"]) {
-      res.write(chunk({ id: "1", choices: [{ index: 0, delta: { role: "assistant", content } }] }));
+      res.write(
+        chunk({
+          id: "1",
+          choices: [{ index: 0, delta: { role: "assistant", content } }],
+        }),
+      );
     }
     res.write(
       chunk({
@@ -131,9 +152,14 @@ test("no key ends with an error and sends nothing", async () => {
 
 test("a model missing from Pi's catalogue ends with an error", async () => {
   const { nvim, events } = fakeNvim();
-  await createSessions("k", options()).prompt(nvim, { ...request("hello"), model: "no-such-model" });
+  await createSessions("k", options()).prompt(nvim, {
+    ...request("hello"),
+    model: "no-such-model",
+  });
 
-  assert.deepEqual(events, [{ type: "end", error: "unknown Mistral model: no-such-model" }]);
+  assert.deepEqual(events, [
+    { type: "end", error: "unknown Mistral model: no-such-model" },
+  ]);
 });
 
 test("the session never creates auth.json in the agent directory", async () => {
@@ -145,7 +171,10 @@ test("the session never creates auth.json in the agent directory", async () => {
 
 test("an unreachable endpoint ends with an error", async () => {
   const { nvim, events } = fakeNvim();
-  await createSessions("k", options({ baseUrl: "http://127.0.0.1:1" })).prompt(nvim, request("hello"));
+  await createSessions("k", options({ baseUrl: "http://127.0.0.1:1" })).prompt(
+    nvim,
+    request("hello"),
+  );
 
   const last = events.at(-1);
   assert.ok(last?.type === "end" && last.error);
@@ -153,7 +182,11 @@ test("an unreachable endpoint ends with an error", async () => {
 
 test("the thinking level reaches a model that reasons", async () => {
   const { nvim } = fakeNvim();
-  await createSessions("k", options()).prompt(nvim, { ...request("hello"), model: "mistral-small-latest", thinking: "high" });
+  await createSessions("k", options()).prompt(nvim, {
+    ...request("hello"),
+    model: "mistral-small-latest",
+    thinking: "high",
+  });
 
   assert.equal(requests[0]?.body.reasoning_effort, "high");
 });
@@ -166,7 +199,10 @@ test("a thinking change keeps the session and its history", async () => {
   await sessions.prompt(nvim, { ...small, text: "two", thinking: "low" });
 
   assert.deepEqual(
-    requests.map((r) => [r.body.reasoning_effort, r.body.messages?.filter((m) => m.role !== "system").length]),
+    requests.map((r) => [
+      r.body.reasoning_effort,
+      r.body.messages?.filter((m) => m.role !== "system").length,
+    ]),
     [
       [undefined, 1],
       ["high", 3],
@@ -178,10 +214,16 @@ test("a model change starts a new session", async () => {
   const { nvim } = fakeNvim();
   const sessions = createSessions("k", options());
   await sessions.prompt(nvim, request("one"));
-  await sessions.prompt(nvim, { ...request("two"), model: "mistral-small-latest" });
+  await sessions.prompt(nvim, {
+    ...request("two"),
+    model: "mistral-small-latest",
+  });
 
   assert.deepEqual(
-    requests.map((r) => [r.body.model, r.body.messages?.filter((m) => m.role !== "system").length]),
+    requests.map((r) => [
+      r.body.model,
+      r.body.messages?.filter((m) => m.role !== "system").length,
+    ]),
     [
       ["codestral-latest", 1],
       ["mistral-small-latest", 1],
@@ -198,22 +240,37 @@ test("each workbench keeps its own session", async () => {
   await sessions.prompt(nvim, request("a2"));
 
   assert.deepEqual(
-    requests.map((r) => r.body.messages?.filter((m) => m.role !== "system").length),
+    requests.map(
+      (r) => r.body.messages?.filter((m) => m.role !== "system").length,
+    ),
     [1, 1, 3],
   );
 });
 
 test("forward passes thinking through, and a tool result's text with its start", () => {
   const none = (): undefined => undefined;
-  const update = (assistantMessageEvent: object) => ({ type: "message_update", message: {}, assistantMessageEvent }) as never;
+  const update = (assistantMessageEvent: object) =>
+    ({ type: "message_update", message: {}, assistantMessageEvent }) as never;
 
-  assert.deepEqual(forward(update({ type: "thinking_delta", delta: "hmm" }), none), { type: "thinking", delta: "hmm" });
-  assert.deepEqual(forward(update({ type: "thinking_end" }), none), { type: "thinking_end" });
+  assert.deepEqual(
+    forward(update({ type: "thinking_delta", delta: "hmm" }), none),
+    { type: "thinking", delta: "hmm" },
+  );
+  assert.deepEqual(forward(update({ type: "thinking_end" }), none), {
+    type: "thinking_end",
+  });
   assert.deepEqual(
     forward(
       {
         type: "message_start",
-        message: { role: "toolResult", content: [{ type: "text", text: "a" }, { type: "image" }, { type: "text", text: "b" }] },
+        message: {
+          role: "toolResult",
+          content: [
+            { type: "text", text: "a" },
+            { type: "image" },
+            { type: "text", text: "b" },
+          ],
+        },
       } as never,
       none,
     ),

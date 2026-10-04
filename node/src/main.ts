@@ -17,13 +17,25 @@ console.error = stray.error;
 
 // The client logs every message at info, so its info counts as debug here.
 const client = createLogger("client");
-const clientLogger = { level: "debug", info: client.debug, warn: client.warn, error: client.error, debug: client.debug };
+const clientLogger = {
+  level: "debug",
+  info: client.debug,
+  warn: client.warn,
+  error: client.error,
+  debug: client.debug,
+};
 
 // ------- Connection -------
 
-const { target, level } = parseCommandLine(process.argv.slice(2), { reader: process.stdin, writer: process.stdout });
+const { target, level } = parseCommandLine(process.argv.slice(2), {
+  reader: process.stdin,
+  writer: process.stdout,
+});
 setLevel(level);
 
 const sessions = createSessions(takeApiKey());
 
-createConnection(target, createHandlers(sessions), { attach: { logger: clientLogger as never }, log });
+createConnection(target, createHandlers(sessions), {
+  attach: { logger: clientLogger as never },
+  log,
+});

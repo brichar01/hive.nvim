@@ -29,13 +29,19 @@ export function parseCommandLine(argv: string[], stdio: Stdio): CommandLine {
 
   const level = values["log-level"];
   if (!isLevel(level)) {
-    throw new Error(`--log-level expects one of ${LEVELS.join(", ")}, got ${level}`);
+    throw new Error(
+      `--log-level expects one of ${LEVELS.join(", ")}, got ${level}`,
+    );
   }
 
   return { target: parseTarget(values.tcp, values.pipe, stdio), level };
 }
 
-function parseTarget(tcp: string | undefined, pipe: string | undefined, stdio: Stdio): Target {
+function parseTarget(
+  tcp: string | undefined,
+  pipe: string | undefined,
+  stdio: Stdio,
+): Target {
   if (tcp !== undefined && pipe !== undefined) {
     throw new Error("give --tcp or --pipe, not both");
   }

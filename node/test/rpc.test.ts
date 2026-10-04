@@ -30,18 +30,58 @@ test("echo sends an empty string for a non-string argument", async () => {
 });
 
 test("prompt request maps the Lua field names", () => {
-  const request = parsePromptRequest({ text: "hi", model: "m", thinking: "low", workbench: "p-1", cwd: "/w" });
-  assert.deepEqual(request, { text: "hi", model: "m", thinking: "low", workbench: "p-1", cwd: "/w" });
+  const request = parsePromptRequest({
+    text: "hi",
+    model: "m",
+    thinking: "low",
+    workbench: "p-1",
+    cwd: "/w",
+  });
+  assert.deepEqual(request, {
+    text: "hi",
+    model: "m",
+    thinking: "low",
+    workbench: "p-1",
+    cwd: "/w",
+  });
 });
 
 test("prompt request rejects a missing field", () => {
-  assert.throws(() => parsePromptRequest({ text: "hi", thinking: "low", workbench: "p-1", cwd: "/w" }), /model/);
+  assert.throws(
+    () =>
+      parsePromptRequest({
+        text: "hi",
+        thinking: "low",
+        workbench: "p-1",
+        cwd: "/w",
+      }),
+    /model/,
+  );
 });
 
 test("prompt request rejects an unknown thinking level", () => {
-  assert.throws(() => parsePromptRequest({ text: "hi", model: "m", thinking: "extreme", workbench: "p-1", cwd: "/w" }), /thinking must be one of/);
+  assert.throws(
+    () =>
+      parsePromptRequest({
+        text: "hi",
+        model: "m",
+        thinking: "extreme",
+        workbench: "p-1",
+        cwd: "/w",
+      }),
+    /thinking must be one of/,
+  );
 });
 
 test("prompt request rejects a missing workbench", () => {
-  assert.throws(() => parsePromptRequest({ text: "hi", model: "m", thinking: "low", cwd: "/w" }), /workbench/);
+  assert.throws(
+    () =>
+      parsePromptRequest({
+        text: "hi",
+        model: "m",
+        thinking: "low",
+        cwd: "/w",
+      }),
+    /workbench/,
+  );
 });

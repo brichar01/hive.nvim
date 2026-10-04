@@ -31,7 +31,15 @@ export const PROVIDER = "mistral";
 export type ThinkingLevel = AgentSession["thinkingLevel"];
 
 /** Matches `thinking_levels` in lua/hive/config.lua. */
-export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
+export const THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const satisfies readonly ThinkingLevel[];
 
 export function isThinkingLevel(value: string): value is ThinkingLevel {
   return (THINKING_LEVELS as readonly string[]).includes(value);
@@ -78,7 +86,9 @@ type CredentialStore = NonNullable<CreateModelRuntimeOptions["credentials"]>;
 type Credential = Awaited<ReturnType<CredentialStore["read"]>>;
 
 /** Read the key once and delete it, so the agent's own shell commands never inherit it. */
-export function takeApiKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
+export function takeApiKey(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
   const key = env[KEY_ENV];
   Reflect.deleteProperty(env, KEY_ENV);
   return key === "" ? undefined : key;
@@ -89,7 +99,10 @@ export function memoryStore(): CredentialStore {
   const data = new Map<string, NonNullable<Credential>>();
   return {
     read: (id) => Promise.resolve(data.get(id)),
-    list: () => Promise.resolve([...data].map(([providerId, c]) => ({ providerId, type: c.type }))),
+    list: () =>
+      Promise.resolve(
+        [...data].map(([providerId, c]) => ({ providerId, type: c.type })),
+      ),
     modify: async (id, fn) => {
       const next = await fn(data.get(id));
       if (next) {
@@ -104,7 +117,8 @@ export function memoryStore(): CredentialStore {
   };
 }
 
-const isTagged = (role: string): role is TaggedRole => role === "user" || role === "assistant" || role === "toolResult";
+const isTagged = (role: string): role is TaggedRole =>
+  role === "user" || role === "assistant" || role === "toolResult";
 
 /**
  * Keep the events Neovim renders, in the shape `on_event` reads.
@@ -112,20 +126,29 @@ const isTagged = (role: string): role is TaggedRole => role === "user" || role =
  * `idOf` finds a message's session entry. Pi saves a message after its `message_end`
  * listeners run, so call this once the listener has returned.
  */
-export function forward(event: AgentSessionEvent, idOf: (message: object) => string | undefined): ForwardedEvent | undefined {
+export function forward(
+  event: AgentSessionEvent,
+  idOf: (message: object) => string | undefined,
+): ForwardedEvent | undefined {
   switch (event.type) {
     case "message_start": {
       const { message } = event;
       // Neovim marks where a user message starts when it sends the prompt.
       if (message.role === "toolResult") {
-        const text = message.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n");
+        const text = message.content
+          .flatMap((c) => (c.type === "text" ? [c.text] : []))
+          .join("\n");
         return { type: "message_start", role: "toolResult", text };
       }
-      return message.role === "assistant" ? { type: "message_start", role: "assistant" } : undefined;
+      return message.role === "assistant"
+        ? { type: "message_start", role: "assistant" }
+        : undefined;
     }
     case "message_end": {
       const id = idOf(event.message);
-      return isTagged(event.message.role) && id ? { type: "message_end", role: event.message.role, id } : undefined;
+      return isTagged(event.message.role) && id
+        ? { type: "message_end", role: event.message.role, id }
+        : undefined;
     }
     case "message_update": {
       const update = event.assistantMessageEvent;
@@ -141,7 +164,11 @@ export function forward(event: AgentSessionEvent, idOf: (message: object) => str
       }
     }
     case "tool_execution_start":
-      return { type: "tool_start", name: event.toolName, args: event.args as unknown };
+      return {
+        type: "tool_start",
+        name: event.toolName,
+        args: event.args as unknown,
+      };
     case "tool_execution_end":
       return { type: "tool_end", name: event.toolName, isError: event.isError };
     case "agent_end": {
@@ -149,7 +176,8 @@ export function forward(event: AgentSessionEvent, idOf: (message: object) => str
         return undefined;
       }
       const last = event.messages.findLast((m) => m.role === "assistant");
-      const error = last && "errorMessage" in last ? last.errorMessage : undefined;
+      const error =
+        last && "errorMessage" in last ? last.errorMessage : undefined;
       return error ? { type: "end", error } : { type: "end" };
     }
     default:
@@ -163,7 +191,11 @@ async function createSession(
   apiKey: string | undefined,
   options: SessionOptions,
 ): Promise<AgentSession> {
-  const runtime = await ModelRuntime.create({ credentials: memoryStore(), modelsPath: null, refreshOnCreate: false });
+  const runtime = await ModelRuntime.create({
+    credentials: memoryStore(),
+    modelsPath: null,
+    refreshOnCreate: false,
+  });
   // With no key, Pi falls back to `MISTRAL_API_KEY` in the service's environment.
   if (apiKey) {
     await runtime.setRuntimeApiKey(PROVIDER, apiKey);
@@ -181,7 +213,9 @@ async function createSession(
     cwd,
     agentDir: options.agentDir ?? getAgentDir(),
     settingsManager,
-    extensionFactories: [{ name: "hive-diagnostics", factory: diagnosticsExtension(nvim, cwd) }],
+    extensionFactories: [
+      { name: "hive-diagnostics", factory: diagnosticsExtension(nvim, cwd) },
+    ],
   });
   await resourceLoader.reload();
 
@@ -213,7 +247,10 @@ async function createSession(
  * One agent session for each workbench of each Neovim client. A prompt with a different model
  * replaces its workbench's session, and the history with it.
  */
-export function createSessions(apiKey: string | undefined, options: SessionOptions = {}): Sessions {
+export function createSessions(
+  apiKey: string | undefined,
+  options: SessionOptions = {},
+): Sessions {
   interface Workbench {
     model: string;
     session: AgentSession;
@@ -223,9 +260,14 @@ export function createSessions(apiKey: string | undefined, options: SessionOptio
   const clients = new WeakMap<NvimConnection, Map<string, Workbench>>();
 
   const send = (nvim: NvimConnection, event: ForwardedEvent): void => {
-    nvim.exec("require('hive.agent').on_event(...)", [event]).catch((err: unknown) => {
-      log.warn("on_event: %s", err instanceof Error ? err.message : String(err));
-    });
+    nvim
+      .exec("require('hive.agent').on_event(...)", [event])
+      .catch((err: unknown) => {
+        log.warn(
+          "on_event: %s",
+          err instanceof Error ? err.message : String(err),
+        );
+      });
   };
 
   const workbenchesOf = (nvim: NvimConnection): Map<string, Workbench> => {
@@ -243,7 +285,10 @@ export function createSessions(apiKey: string | undefined, options: SessionOptio
     return workbenches;
   };
 
-  const workbenchFor = async (nvim: NvimConnection, request: PromptRequest): Promise<Workbench> => {
+  const workbenchFor = async (
+    nvim: NvimConnection,
+    request: PromptRequest,
+  ): Promise<Workbench> => {
     const workbenches = workbenchesOf(nvim);
     const current = workbenches.get(request.workbench);
     if (current?.model === request.model) {
@@ -256,7 +301,9 @@ export function createSessions(apiKey: string | undefined, options: SessionOptio
     const idOf = (message: object): string | undefined =>
       session.sessionManager
         .getBranch()
-        .findLast((entry) => entry.type === "message" && entry.message === message)?.id;
+        .findLast(
+          (entry) => entry.type === "message" && entry.message === message,
+        )?.id;
 
     // Each event is forwarded a microtask after its listener, in order, so a message_end sees its saved entry.
     let queue = Promise.resolve();
@@ -280,7 +327,10 @@ export function createSessions(apiKey: string | undefined, options: SessionOptio
         await session.prompt(request.text);
         await drained();
       } catch (err) {
-        send(nvim, { type: "end", error: err instanceof Error ? err.message : String(err) });
+        send(nvim, {
+          type: "end",
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     },
   };

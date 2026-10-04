@@ -4,7 +4,11 @@ import { serveSocket } from "./socket.ts";
 import type { ConnectOptions, OnClient, PipeTarget } from "./types.ts";
 
 /** Listen on a Unix socket and serve each Neovim that connects. */
-export function connectPipe(target: PipeTarget, onClient: OnClient, options: ConnectOptions): net.Server {
+export function connectPipe(
+  target: PipeTarget,
+  onClient: OnClient,
+  options: ConnectOptions,
+): net.Server {
   const log = options.log ?? silent;
   return serveSocket(
     (server) =>

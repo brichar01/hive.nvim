@@ -11,16 +11,38 @@ import { type Logger, silent } from "../src/log.ts";
 import type { NvimConnection } from "../src/nvim_wrapper.ts";
 import type { Handler } from "../src/rpc.ts";
 
-const quiet = { attach: { logger: { level: "error", info() {}, warn() {}, error() {}, debug() {} } as never } };
+const quiet = {
+  attach: {
+    logger: {
+      level: "error",
+      info() {},
+      warn() {},
+      error() {},
+      debug() {},
+    } as never,
+  },
+};
 
 const nvim: NvimConnection = { on: () => {}, exec: () => Promise.resolve(0) };
 
 function recorder(): { log: Logger; lines: string[] } {
   const lines: string[] = [];
-  const at = (level: string) => (fmt: unknown, ...args: unknown[]) => {
-    lines.push(`${level} ${String(fmt)} ${args.map(String).join(" ")}`.trim());
+  const at =
+    (level: string) =>
+    (fmt: unknown, ...args: unknown[]) => {
+      lines.push(
+        `${level} ${String(fmt)} ${args.map(String).join(" ")}`.trim(),
+      );
+    };
+  return {
+    log: {
+      error: at("error"),
+      warn: at("warn"),
+      info: at("info"),
+      debug: at("debug"),
+    },
+    lines,
   };
-  return { log: { error: at("error"), warn: at("warn"), info: at("info"), debug: at("debug") }, lines };
 }
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -47,9 +69,15 @@ describe("dispatch", () => {
 
   test("logs a handler failure as an error", async () => {
     const { log, lines } = recorder();
-    dispatch(nvim, { boom: () => Promise.reject(new Error("bang")) }, log)("boom", []);
+    dispatch(
+      nvim,
+      { boom: () => Promise.reject(new Error("bang")) },
+      log,
+    )("boom", []);
     await tick();
-    assert.ok(lines.some((line) => line.startsWith("error") && line.includes("bang")));
+    assert.ok(
+      lines.some((line) => line.startsWith("error") && line.includes("bang")),
+    );
   });
 });
 
@@ -90,7 +118,11 @@ describe("createConnection", () => {
   });
 
   test("tcp listens on the given port", async () => {
-    const server = createConnection({ kind: "tcp", host: "127.0.0.1", port: 0 }, {}, quiet);
+    const server = createConnection(
+      { kind: "tcp", host: "127.0.0.1", port: 0 },
+      {},
+      quiet,
+    );
     assert.ok(server);
     await once(server, "listening");
     server.close();

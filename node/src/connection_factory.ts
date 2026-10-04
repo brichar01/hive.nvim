@@ -22,7 +22,11 @@ export function dispatch(
       return;
     }
     handler(nvim, args).catch((err: unknown) => {
-      log.error("%s: %s", method, err instanceof Error ? (err.stack ?? err.message) : String(err));
+      log.error(
+        "%s: %s",
+        method,
+        err instanceof Error ? (err.stack ?? err.message) : String(err),
+      );
     });
   };
 }

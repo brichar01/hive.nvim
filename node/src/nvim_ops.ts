@@ -20,8 +20,12 @@ export function createNvimOperations(nvim: NvimConnection): NvimOperations {
     (await nvim.exec("return require('hive.fs').loaded(...)", [path])) === true;
 
   const read = async (path: string): Promise<Buffer> => {
-    const content = await nvim.exec("return require('hive.fs').read(...)", [path]);
-    return typeof content === "string" ? Buffer.from(content, "utf-8") : readFile(path);
+    const content = await nvim.exec("return require('hive.fs').read(...)", [
+      path,
+    ]);
+    return typeof content === "string"
+      ? Buffer.from(content, "utf-8")
+      : readFile(path);
   };
 
   const write = async (path: string, content: string): Promise<void> => {
@@ -34,16 +38,17 @@ export function createNvimOperations(nvim: NvimConnection): NvimOperations {
 
   const accessible =
     (mode: number) =>
-      async (path: string): Promise<void> => {
-        if (!(await loaded(path))) {
-          await access(path, mode);
-        }
-      };
+    async (path: string): Promise<void> => {
+      if (!(await loaded(path))) {
+        await access(path, mode);
+      }
+    };
 
   return {
     read: {
       // Image detection sniffs the file on disk, so an image is never served from a buffer.
-      readFile: async (path) => ((await detectImage(path)) ? readFile(path) : read(path)),
+      readFile: async (path) =>
+        (await detectImage(path)) ? readFile(path) : read(path),
       access: accessible(constants.R_OK),
       detectImageMimeType: detectImage,
     },
@@ -53,6 +58,10 @@ export function createNvimOperations(nvim: NvimConnection): NvimOperations {
         await mkdir(dir, { recursive: true });
       },
     },
-    edit: { readFile: read, writeFile: write, access: accessible(constants.R_OK | constants.W_OK) },
+    edit: {
+      readFile: read,
+      writeFile: write,
+      access: accessible(constants.R_OK | constants.W_OK),
+    },
   };
 }
