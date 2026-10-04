@@ -1,4 +1,4 @@
-.PHONY: test test-one lint format typecheck check dev clean measure-consumers measure-prefill
+.PHONY: test test-one lint format typecheck check node-typecheck node-lint node-test node-check dev clean measure-consumers measure-prefill
 
 test:
 	nvim -l tests/minit.lua --minitest $(FILE)
@@ -20,7 +20,18 @@ typecheck:
 		export VIMRUNTIME && \
 		lua-language-server --check_format=pretty --check lua/ --configpath="$$(pwd)/.luarc.json" --checklevel=Warning
 
-check: lint typecheck test
+check: lint typecheck test node-check
+
+node-typecheck:
+	cd node && npm run typecheck
+
+node-lint:
+	cd node && npm run lint
+
+node-test:
+	cd node && npm test
+
+node-check: node-typecheck node-lint node-test
 
 # Re-measures §7.4 / [R§11.9]: which servers can say what calls the target,
 # and by which request. Needs the language servers on PATH or in mason's bin;

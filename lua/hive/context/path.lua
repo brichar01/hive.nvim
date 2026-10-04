@@ -23,6 +23,16 @@ function M.relative_with_line(line1, line2)
   return ref
 end
 
+---`text` under its `<path>:<line1>-<line2>` reference, or `text` alone for a buffer with no file.
+---@param line1 integer
+---@param line2 integer
+---@param text string
+---@return string
+function M.snippet(line1, line2, text)
+  local ok, ref = pcall(M.relative_with_line, line1, line2)
+  return ok and ref .. "\n" .. text or text
+end
+
 function M.full()
   local file = vim.api.nvim_buf_get_name(0)
   if file == "" then

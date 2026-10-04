@@ -42,6 +42,7 @@ end
 
 local function new_workbench()
   open_workbench(new_path())
+  vim.cmd("write")
 end
 
 --- @return table this project's workbench paths, in name order
@@ -85,6 +86,7 @@ function M.current()
 end
 
 M.actions = {
+  fn = workbench_slug,
   open = function()
     local latest = latest_workbench()
     if latest then

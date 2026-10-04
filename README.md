@@ -180,6 +180,49 @@ require("hive").setup({
 })
 ```
 
+#### The agent
+
+`:Hive` uses Pi's built-in Mistral provider, with its own options in `agent`. The
+options above apply only to `:HiveBare`. `agent.model` is a model id from Pi's
+Mistral catalogue, and Pi sets the endpoint and token limits for it. The key comes
+from `agent.api_key`, then `$MISTRAL_API_KEY` (renameable via `agent.api_key_env`).
+`agent.api_key` takes a string or a function, the same as `api_key`.
+
+`agent.thinking` is one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or
+`max`, and `medium` by default. Pi lowers it to what the model supports, so a model
+without reasoning runs at `off`.
+
+```lua
+require("hive").setup({
+  agent = {
+    model = "devstral-medium-latest",
+    thinking = "medium",
+    api_key_env = "MISTRAL_API_KEY",
+  },
+})
+```
+
+The conversation goes into the project's newest workbench, the same one
+`:HiveContext workbench open` shows. Each workbench has its own session, so
+`:HiveContext workbench new` starts a new conversation. Neovim does not save the
+workbench for you.
+
+Each message in the workbench sits between `<!-- hive:entry <id> -->` and
+`<!-- hive:end <id> -->`. The id is the message's entry in the agent session. The
+workbench window folds on these tags. Tool results, and agent messages with only
+thinking or a tool call, start closed. To chat in the workbench itself, write below the last `hive:end` tag and run
+`:Hive chat`. It sends that text as the prompt and appends the reply below it.
+
+To change either value until Neovim exits, use `:Hive set`. A new model starts a new
+session, and the conversation history is lost. A new thinking level keeps the session.
+With no value, `:Hive set` shows the current one.
+
+```vim
+:Hive set model mistral-small-latest
+:Hive set thinking high
+:Hive set thinking
+```
+
 #### Pointing it at another machine
 
 `base_url` is the only thing that has to change. `model` almost certainly does

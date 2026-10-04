@@ -16,7 +16,7 @@ local DEFAULT_FIM_MAX_TOKENS = 128
 
 ---@class Hive.Subcommand
 ---@field impl fun(args: string[], opts: table) run the subcommand with the remaining arguments and the command options
----@field complete? fun(arg_lead: string): string[] completions for the subcommand's own arguments
+---@field complete? fun(arg_lead: string, args: string[]): string[] completions for the subcommand's own arguments, given the ones before `arg_lead`
 
 ---@param words string[]
 ---@return fun(arg_lead: string): string[]
@@ -301,6 +301,114 @@ local context_cmds = {
   },
 }
 
+-- ------------------------------------------------------- :Hive -------------------------------------------------------
+
+---@type table<string, Hive.Subcommand>
+local agent_cmds = {
+  -- Connect to the service on `rpc` (spawn it), `tcp <host>:<port>` or `pipe <path>`.
+  attach = {
+    impl = function(args)
+      local Util = require("hive.util")
+      local target = args[1] or "rpc"
+      local err = require("hive.agent").attach(target, args[2])
+      if err then
+        return Util.error("Hive attach: " .. err)
+      end
+      Util.info(("attached over %s"):format(target))
+    end,
+    complete = complete_from({ "pipe", "rpc", "tcp" }),
+  },
+
+  -- Send the workbench's text after the last reply as the prompt.
+  chat = {
+    impl = function()
+      local err = require("hive.agent").chat()
+      if err then
+        require("hive.util").error("Hive chat: " .. err)
+      end
+    end,
+  },
+
+  echo = {
+    impl = function(args)
+      local err = require("hive.agent").notify("echo", table.concat(args, " "))
+      if err then
+        require("hive.util").error("Hive echo: " .. err)
+      end
+    end,
+  },
+
+  -- Override the agent's `model` or `thinking` level until Neovim exits. With no value, show the current one.
+  set = {
+    impl = function(args)
+      local Util = require("hive.util")
+      local Agent = require("hive.agent")
+      local setters = { model = Agent.set_model, thinking = Agent.set_thinking }
+      local key, value = args[1], args[2]
+      local setter = key and setters[key]
+      if not setter then
+        return Util.error(("Hive set: expected model or thinking, got %s"):format(key or "<none>"))
+      end
+      if value then
+        local err = setter(value)
+        if err then
+          return Util.error("Hive set: " .. err)
+        end
+      end
+      Util.info(("%s: %s"):format(key, Agent.settings()[key]))
+    end,
+    complete = function(arg_lead, args)
+      if #args == 0 then
+        return complete_from({ "model", "thinking" })(arg_lead)
+      end
+      if #args == 1 and args[1] == "thinking" then
+        return complete_from(require("hive.config").thinking_levels)(arg_lead)
+      end
+      return {}
+    end,
+  },
+
+  prompt = {
+    impl = function(args)
+      local Util = require("hive.util")
+      local text = vim.trim(table.concat(args, " "))
+      if text == "" then
+        return Util.error("Hive prompt: missing prompt")
+      end
+      local err = require("hive.agent").prompt(text)
+      if err then
+        Util.error("Hive prompt: " .. err)
+      end
+    end,
+  },
+
+  -- Ask for an instruction, then send the last visual selection's `<path>:<range>`, the selection and the instruction.
+  selection = {
+    impl = function(_, opts)
+      local Util = require("hive.util")
+      local lines = opts.range > 0
+          and vim.fn.getregion(vim.fn.getpos("'<"), vim.fn.getpos("'>"), { type = vim.fn.visualmode() })
+        or {}
+      local text = vim.trim(table.concat(lines, "\n"))
+      if text == "" then
+        return Util.error("Hive selection: empty selection")
+      end
+      text = require("hive.context.path").snippet(vim.fn.line("'<"), vim.fn.line("'>"), text)
+
+      vim.ui.input({ prompt = "Hive: " }, function(input)
+        if input == nil then
+          return
+        end
+        input = vim.trim(input)
+        local err = require("hive.agent").prompt(input == "" and text or text .. "\n" .. input)
+        if err then
+          Util.error("Hive selection: " .. err)
+        end
+      end)
+    end,
+  },
+}
+
 -- --------------------------------------------------- Registration ----------------------------------------------------
 
 ---@param name string command name
@@ -329,10 +437,12 @@ local function register(name, sub_cmds, desc)
       end
 
       local sub_cmd = sub_cmds[args[2]]
-      return sub_cmd and sub_cmd.complete and sub_cmd.complete(arg_lead) or {}
+      local before = vim.list_slice(args, 3, arg_lead == "" and #args or #args - 1)
+      return sub_cmd and sub_cmd.complete and sub_cmd.complete(arg_lead, before) or {}
     end,
   })
 end
 
+register("Hive", agent_cmds, "Drive the agent service")
 register("HiveBare", bare_cmds, "Send a prompt straight to the configured endpoint")
 register("HiveContext", context_cmds, "Select, gather and copy code context")
