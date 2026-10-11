@@ -8,12 +8,16 @@ import { after, before, beforeEach, test } from "node:test";
 import type { NvimConnection } from "../src/nvim_wrapper.ts";
 import {
   createSessions,
+  DEFAULT_TOOLS,
   type ForwardedEvent,
   forward,
   KEY_ENV,
   type PromptRequest,
+  resolveTools,
   type SessionOptions,
   takeApiKey,
+  toolMatches,
+  TOOLS,
 } from "../src/session.ts";
 
 const sandbox = mkdtempSync(join(tmpdir(), "hive-session-"));
@@ -113,6 +117,52 @@ const options = (extra: SessionOptions = {}): SessionOptions => ({
 
 // ------- Tests -------
 
+test("toolMatches treats * as any characters", () => {
+  assert.equal(toolMatches("read_disk", "read_disk"), true);
+  assert.equal(toolMatches("read_disk", "read"), false);
+  assert.equal(toolMatches("read_disk", "*_disk"), true);
+  assert.equal(toolMatches("read", "*_disk"), false);
+  assert.equal(toolMatches("mcp__radius__search", "mcp__radius__*"), true);
+});
+
+test("resolveTools selects plain names and globs", () => {
+  assert.deepEqual(resolveTools(["read", "bash"]), ["read", "bash"]);
+  assert.deepEqual(resolveTools(["*_disk"]), ["read_disk", "write_disk"]);
+});
+
+test("resolveTools applies deltas to the default selection", () => {
+  assert.deepEqual(resolveTools(["+read_disk"]), [...DEFAULT_TOOLS, "read_disk"]);
+  assert.deepEqual(
+    resolveTools(["-write"]),
+    DEFAULT_TOOLS.filter((tool) => tool !== "write"),
+  );
+  assert.deepEqual(
+    resolveTools(["+read_disk", "-write"]),
+    [...DEFAULT_TOOLS.filter((tool) => tool !== "write"), "read_disk"],
+  );
+});
+
+test("resolveTools rejects unknown names, mixing, and empty patterns", () => {
+  assert.throws(() => resolveTools(["rm"]), /unknown tool/);
+  assert.throws(() => resolveTools(["read", "+write_disk"]), /mixing plain tool names/);
+  assert.throws(() => resolveTools(["zzz*"]), /unknown tool/);
+});
+
+test("every registered tool has a spec", () => {
+  assert.deepEqual(new Set(TOOLS).size, TOOLS.length);
+  assert.deepEqual([...TOOLS].sort(), [
+    "bash",
+    "edit",
+    "find",
+    "grep",
+    "ls",
+    "read",
+    "read_disk",
+    "write",
+    "write_disk",
+  ]);
+});
+
 test("takeApiKey reads the key and removes it from the environment", () => {
   const env = { [KEY_ENV]: "secret" };
   assert.equal(takeApiKey(env), "secret");
@@ -206,7 +256,8 @@ test("a thinking change keeps the session and its history", async () => {
       r.body.messages?.filter((m) => m.role !== "system").length,
     ]),
     [
-      [undefined, 1],
+      // Pi 1.1.0 sends an explicit "none" for a reasoning model at thinking level "off".
+      ["none", 1],
       ["high", 3],
     ],
   );
@@ -228,6 +279,34 @@ test("the request's tools are the active tools, and a change keeps the session",
       [["bash", "read_disk"], 3],
     ],
   );
+});
+
+test("a glob activates every matching tool", async () => {
+  const { nvim } = fakeNvim();
+  await createSessions("k", options()).prompt(nvim, {
+    ...request("one"),
+    tools: ["*_disk"],
+  });
+
+  assert.deepEqual(
+    requests[0]?.body.tools?.map((t) => t.function.name).sort(),
+    ["read_disk", "write_disk"],
+  );
+});
+
+test("a delta changes the default selection and keeps the session", async () => {
+  const { nvim } = fakeNvim();
+  const sessions = createSessions("k", options());
+  await sessions.prompt(nvim, { ...request("one"), tools: ["+read_disk", "-write"] });
+  await sessions.prompt(nvim, { ...request("two"), tools: ["+read_disk", "-write"] });
+
+  const expected = [...DEFAULT_TOOLS.filter((tool) => tool !== "write"), "read_disk"].sort();
+  assert.deepEqual(
+    requests.map((r) => r.body.tools?.map((t) => t.function.name).sort()),
+    [expected, expected],
+  );
+  // The delta leaves the tool set unchanged, so the second prompt reuses the session.
+  assert.equal(requests[1]?.body.messages?.filter((m) => m.role !== "system").length, 3);
 });
 
 test("a model change starts a new session", async () => {

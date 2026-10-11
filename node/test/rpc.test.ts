@@ -59,7 +59,47 @@ test("prompt request rejects an unknown tool", () => {
         cwd: "/w",
         tools: ["read", "rm"],
       }),
-    /tools must be a list of/,
+    /unknown tool/,
+  );
+});
+
+test("prompt request accepts globs and deltas", () => {
+  assert.deepEqual(
+    parsePromptRequest({
+      text: "hi",
+      model: "m",
+      thinking: "low",
+      workbench: "p-1",
+      cwd: "/w",
+      tools: ["*_disk"],
+    }).tools,
+    ["*_disk"],
+  );
+  assert.deepEqual(
+    parsePromptRequest({
+      text: "hi",
+      model: "m",
+      thinking: "low",
+      workbench: "p-1",
+      cwd: "/w",
+      tools: ["+read_disk", "-write"],
+    }).tools,
+    ["+read_disk", "-write"],
+  );
+});
+
+test("prompt request rejects mixing plain names with deltas", () => {
+  assert.throws(
+    () =>
+      parsePromptRequest({
+        text: "hi",
+        model: "m",
+        thinking: "low",
+        workbench: "p-1",
+        cwd: "/w",
+        tools: ["read", "+write_disk"],
+      }),
+    /mixing plain tool names/,
   );
 });
 

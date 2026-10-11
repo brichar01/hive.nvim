@@ -195,7 +195,12 @@ without reasoning runs at `off`.
 `agent.tools` lists the active tools. By default these are `read`, `write`, `edit`,
 `bash`, `grep`, `find` and `ls`. `read`, `write` and `edit` use Neovim's buffers.
 `read_disk` and `write_disk` are Pi's own read and write, which use the file on disk
-and ignore unsaved changes. They are off by default.
+and ignore unsaved changes. They are off by default and reachable only from
+`codemode` scripts, so they never clutter the model's tool list.
+
+An entry is an exact name, a `*` pattern (any characters), or a `+name`/`-name`
+delta. A list of plain names and patterns replaces the selection; a list of only
+deltas changes it, keeping the rest:
 
 ```lua
 require("hive").setup({
@@ -203,9 +208,14 @@ require("hive").setup({
     model = "devstral-medium-latest",
     thinking = "medium",
     api_key_env = "MISTRAL_API_KEY",
+    -- Keep the defaults, add the disk-aware read, and drop write.
+    tools = { "+read_disk", "-write" },
   },
 })
 ```
+
+Plain names and deltas cannot be mixed, matching Pi's own `--tools`. The same
+syntax works at run time with `:Hive set tools`.
 
 The conversation goes into the project's newest workbench, the same one
 `:HiveContext workbench open` shows. Each workbench has its own session, so
@@ -224,14 +234,17 @@ thinking or a tool call, start closed. To chat in the workbench itself, write be
 
 To change the model, thinking level or tools until Neovim exits, use `:Hive set`. A
 new model starts a new session, and the conversation history is lost. A new thinking
-level or tool list keeps the session. `:Hive set tools` replaces the whole list. With
-no value, `:Hive set` shows the current one.
+level or tool list keeps the session. `:Hive set tools` takes the same exact names,
+`*` patterns and `+name`/`-name` deltas as `agent.tools`. With no value, `:Hive set`
+shows the current one.
 
 ```vim
 :Hive set model mistral-small-latest
 :Hive set thinking high
 :Hive set thinking
 :Hive set tools read_disk write_disk edit bash grep find ls
+:Hive set tools +read_disk -write
+:Hive set tools '*_disk'
 ```
 
 #### Pointing it at another machine

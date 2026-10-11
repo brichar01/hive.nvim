@@ -1,8 +1,8 @@
 import { type NvimConnection } from "./nvim_wrapper.ts";
 import {
   isThinkingLevel,
-  isTool,
   type PromptRequest,
+  resolveTools,
   type Sessions,
   THINKING_LEVELS,
   TOOLS,
@@ -37,10 +37,18 @@ export function parsePromptRequest(arg: unknown): PromptRequest {
     cwd: field("cwd"),
   };
   const { tools } = fields;
-  if (!Array.isArray(tools) || !tools.every((tool) => typeof tool === "string" && isTool(tool))) {
-    throw new Error(`prompt: tools must be a list of ${TOOLS.join(", ")}`);
+  if (!Array.isArray(tools) || !tools.every((tool) => typeof tool === "string")) {
+    throw new Error(`prompt: tools must be a list of ${TOOLS.join(", ")}, with * patterns or +name/-name deltas`);
   }
-  return { ...request, tools: tools as string[] };
+  const names = tools;
+  try {
+    resolveTools(names);
+  } catch (err) {
+    throw new Error(`prompt: ${err instanceof Error ? err.message : String(err)}`, {
+      cause: err,
+    });
+  }
+  return { ...request, tools: names };
 }
 
 export function createHandlers(sessions: Sessions): Record<string, Handler> {

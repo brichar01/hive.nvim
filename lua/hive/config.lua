@@ -40,19 +40,93 @@ local defaults = {
   },
 }
 
+-- The tools `:Hive` registers. `exposure` is Pi's reach mode:
+--   direct    declared to the model while active, and callable
+--   model-only declared to the model while active, never callable by other tools
+--   codemode  callable from codemode scripts and listed by the codemode tool, not declared
+--   deferred  like codemode, but also findable by tool_search
+--   hidden    registered but unreachable
+-- Hive's own read/write/edit are direct: they are the point of the frontend. The disk
+-- variants are codemode only, so they never clutter the model's tool list.
+---@class Hive.ToolSpec
+---@field name string
+---@field exposure "direct"|"model-only"|"codemode"|"deferred"|"hidden"
+
+---@type Hive.ToolSpec[]
+M.tool_registry = {
+  { name = "read", exposure = "direct" },
+  { name = "write", exposure = "direct" },
+  { name = "edit", exposure = "direct" },
+  { name = "bash", exposure = "direct" },
+  { name = "grep", exposure = "direct" },
+  { name = "find", exposure = "direct" },
+  { name = "ls", exposure = "direct" },
+  { name = "read_disk", exposure = "codemode" },
+  { name = "write_disk", exposure = "codemode" },
+}
+
 -- Matches `THINKING_LEVELS` in node/src/session.ts.
 M.thinking_levels = { "off", "minimal", "low", "medium", "high", "xhigh", "max" }
 
--- Matches `TOOLS` in node/src/session.ts.
-M.tools = { "read", "write", "edit", "bash", "grep", "find", "ls", "read_disk", "write_disk" }
+-- Matches `TOOLS` in node/src/session.ts, derived from `M.tool_registry`.
+---@type string[]
+M.tools = vim.tbl_map(function(spec)
+  return spec.name
+end, M.tool_registry)
 
+---Whether `name` matches `pattern`, where `*` matches any characters.
+---@param name string
+---@param pattern string
+---@return boolean
+function M.tool_matches(name, pattern)
+  if not pattern:find("*", 1, true) then
+    return name == pattern
+  end
+  -- Build a Lua pattern from the glob: escape each non-`*` run, turn `*` into `.*`.
+  local parts = vim.split(pattern, "*", { plain = true })
+  local escaped = vim.tbl_map(vim.pesc, parts)
+  return name:match("^" .. table.concat(escaped, ".*") .. "$") ~= nil
+end
+
+---Recognise a `+name` or `-name` entry.
+---@param entry string
+---@return "+"|"-"|nil sign
+---@return string name without the sign
+local function delta(entry)
+  local sign, name = entry:match("^([+-])(.+)$")
+  return sign, name or entry
+end
+
+---Validate a tool selection. Entries are exact names, `*` patterns, or `+name`/`-name` deltas.
+---A list of only delta entries changes the default selection; any plain name replaces it, and
+---the two cannot be mixed. Matches Pi's `--tools` semantics.
 ---@param tools string[]
----@return string|nil err for a name not in `M.tools`
+---@return string|nil err for an entry that names or matches no registered tool, or a mixed list
 function M.check_tools(tools)
-  for _, tool in ipairs(tools) do
-    if not vim.list_contains(M.tools, tool) then
-      return ("unknown tool %s, expected some of %s"):format(tool, table.concat(M.tools, ", "))
+  local saw_delta, saw_plain = false, false
+  for _, entry in ipairs(tools) do
+    if type(entry) ~= "string" or entry == "" then
+      return "tool entries must be non-empty strings"
     end
+    local sign, name = delta(entry)
+    if sign then
+      saw_delta = true
+    else
+      saw_plain = true
+    end
+    local matched = false
+    for _, tool in ipairs(M.tools) do
+      if M.tool_matches(tool, name) then
+        matched = true
+        break
+      end
+    end
+    if not matched then
+      return ("unknown tool %s, expected some of %s"):format(entry, table.concat(M.tools, ", "))
+    end
+  end
+  if saw_delta and saw_plain then
+    return "mixing plain tool names with +name/-name deltas is not allowed"
   end
 end
 

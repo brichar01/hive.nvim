@@ -206,6 +206,7 @@ function M.set_thinking(level)
 end
 
 ---Override the active tools for later prompts. The session and its history carry over.
+---Entries are exact names, `*` patterns, or `+name`/`-name` deltas on the default selection.
 ---@param tools string[]
 ---@return string|nil err
 function M.set_tools(tools)

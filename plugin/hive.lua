@@ -375,7 +375,20 @@ local agent_cmds = {
         return complete_from(require("hive.config").thinking_levels)(arg_lead)
       end
       if args[1] == "tools" then
-        return complete_from(require("hive.config").tools)(arg_lead)
+        -- Plain names replace the selection; `+name`/`-name` deltas change it.
+        local names = require("hive.config").tools
+        local words = vim.list_extend(
+          vim.deepcopy(names),
+          vim.tbl_map(function(name)
+            return "+" .. name
+          end, names)
+        )
+        return complete_from(vim.list_extend(
+          words,
+          vim.tbl_map(function(name)
+            return "-" .. name
+          end, names)
+        ))(arg_lead)
       end
       return {}
     end,

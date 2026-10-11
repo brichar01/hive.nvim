@@ -12,7 +12,7 @@
     "check": "npm run typecheck && npm run lint && npm test"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@earendil-works/pi-coding-agent": "^1.1.0",
     "neovim": "^5.5.0"
   },
   "devDependencies": {

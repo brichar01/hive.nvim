@@ -167,29 +167,18 @@ buffer with no disk entry.
 `tool_result` carries `details.diff`, `details.patch` and `details.firstChangedLine`
 (`core/tools/edit.ts:70`). That is the extmark diff and the cursor jump.
 
-Approvals gate at `tool_call`. The handler is async, so it awaits the Neovim round
-trip and returns `{block: true, reason}` on a refusal. The diff only exists after
-execute, so approval is on intent (path, edit count), not on a rendered diff.
-
 ### 7. Packaging and health
 
 Node on `PATH` and a built `node/` bundle become hard requirements. Add checks for
 both to `lua/hive/health.lua` alongside the curl check.
 
-## Open decision: save policy
+## Decision: save policy
 
-Buffers left modified mean `bash`, `grep`, `find` and any test run see stale disk,
-because those tools still read the filesystem.
-
-- **a.** Leave buffers modified. Full review gate, but the agent's own shell commands
-  lie to it.
-- **b.** Auto-save after each write. Consistent, no review gate, and undo is the only
-  recovery.
-- **c.** Leave buffers modified, and flush dirty agent-touched buffers from a
-  `tool_call` hook on `bash`. Keeps the review gate and closes the gap where it bites.
-
-Recommended: **c**, as a config key with a and b available. The choice only affects
-stage 5.
+Real save tools are included in the tool list, and activated by the user at intervals, 
+such as to clean up tests, or generate boilerplate. Sandboxing is done externally to 
+this plugin, and these controlls are purely intended to allow the user to intervene 
+easily and course correct. This gates the code behind review, while allowing the user to 
+opt into true 'automode' as necessary. 
 
 ## New files
 
