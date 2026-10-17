@@ -451,7 +451,7 @@ async function createSession(
     cwd,
     agentDir: options.agentDir ?? getAgentDir(),
     // Replace the base prompt:
-    systemPromptOverride: (base) => `${base || ""}` + "\n\n" + HIVE_SYSTEM_PROMPT,
+    systemPromptOverride: (base) => (base || "") + "\n\n" + HIVE_SYSTEM_PROMPT,
     settingsManager,
     extensionFactories: [
       { name: "hive-diagnostics", factory: diagnosticsExtension(nvim, cwd) },
