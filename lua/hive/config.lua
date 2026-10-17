@@ -27,16 +27,16 @@ local defaults = {
   api_key = nil,
   api_key_env = "HIVE_API_KEY",
 
-  -- `:Hive` runs on Pi's built-in Mistral provider, independent of the options above.
+  -- `:Hive` runs on Pi's built-in DeepSeek provider, independent of the options above.
   agent = {
-    model = "codestral-latest",
-    -- Pi's default. Pi clamps it to what the model supports, so a model without reasoning runs at "off".
-    thinking = "medium",
+    model = "deepseek-flash",
+    -- Pi clamps it to what the model supports, so a model without reasoning runs at "off".
+    thinking = "low",
     -- `read_disk` and `write_disk` are Pi's own read and write, which skip Neovim's buffers.
-    tools = { "read", "write", "edit", "bash", "grep", "find", "ls" },
+    tools = { "read", "write", "edit", "bash", "grep", "find", "ls", "ddgr_search" },
     ---@type string|fun(): string|nil
     api_key = nil,
-    api_key_env = "MISTRAL_API_KEY",
+    api_key_env = "DEEPSEEK_API_KEY",
   },
 }
 
@@ -58,11 +58,12 @@ M.tool_registry = {
   { name = "write", exposure = "direct" },
   { name = "edit", exposure = "direct" },
   { name = "bash", exposure = "direct" },
-  { name = "grep", exposure = "direct" },
-  { name = "find", exposure = "direct" },
-  { name = "ls", exposure = "direct" },
-  { name = "read_disk", exposure = "codemode" },
-  { name = "write_disk", exposure = "codemode" },
+  { name = "grep", exposure = "codemode" },
+  { name = "find", exposure = "codemode" },
+  { name = "ls", exposure = "codemode" },
+  { name = "read_disk", exposure = "deferred" },
+  { name = "write_disk", exposure = "deferred" },
+  { name = "ddgr_search", exposure = "direct" },
 }
 
 -- Matches `THINKING_LEVELS` in node/src/session.ts.
@@ -184,7 +185,7 @@ function M.resolve_api_key()
   return resolve("bare", config.api_key, config.api_key_env)
 end
 
----Resolve the agent's Mistral key from `agent.api_key` or the environment.
+---Resolve the agent's DeepSeek key from `agent.api_key` or the environment.
 ---@return string|nil token
 function M.resolve_agent_api_key()
   return resolve("agent", config.agent.api_key, config.agent.api_key_env)

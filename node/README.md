@@ -65,11 +65,11 @@ connect to it.
    node node/src/main.ts --tcp 127.0.0.1:7777
    ```
 
-   The agent uses Pi's built-in Mistral provider. Put the Mistral key in
+   The agent uses Pi's built-in DeepSeek provider. Put the DeepSeek key in
    `HIVE_AGENT_API_KEY` when you start the service. Neovim cannot give a key to
    a service that it did not start. The service reads the variable once at
    startup, then removes it. If `HIVE_AGENT_API_KEY` is not set, Pi reads
-   `MISTRAL_API_KEY`.
+   `DEEPSEEK_API_KEY`.
 
    ```sh
    HIVE_AGENT_API_KEY="$(pass show llm/key)" node node/src/main.ts --pipe /tmp/hive.sock

@@ -182,14 +182,14 @@ require("hive").setup({
 
 #### The agent
 
-`:Hive` uses Pi's built-in Mistral provider, with its own options in `agent`. The
+`:Hive` uses Pi's built-in DeepSeek provider, with its own options in `agent`. The
 options above apply only to `:HiveBare`. `agent.model` is a model id from Pi's
-Mistral catalogue, and Pi sets the endpoint and token limits for it. The key comes
-from `agent.api_key`, then `$MISTRAL_API_KEY` (renameable via `agent.api_key_env`).
+DeepSeek catalogue, and Pi sets the endpoint and token limits for it. The key comes
+from `agent.api_key`, then `$DEEPSEEK_API_KEY` (renameable via `agent.api_key_env`).
 `agent.api_key` takes a string or a function, the same as `api_key`.
 
 `agent.thinking` is one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or
-`max`, and `medium` by default. Pi lowers it to what the model supports, so a model
+`max`, and `low` by default. Pi lowers it to what the model supports, so a model
 without reasoning runs at `off`.
 
 `agent.tools` lists the active tools. By default these are `read`, `write`, `edit`,
@@ -205,9 +205,9 @@ deltas changes it, keeping the rest:
 ```lua
 require("hive").setup({
   agent = {
-    model = "devstral-medium-latest",
-    thinking = "medium",
-    api_key_env = "MISTRAL_API_KEY",
+    model = "deepseek-v4-pro",
+    thinking = "low",
+    api_key_env = "DEEPSEEK_API_KEY",
     -- Keep the defaults, add the disk-aware read, and drop write.
     tools = { "+read_disk", "-write" },
   },
@@ -239,7 +239,7 @@ level or tool list keeps the session. `:Hive set tools` takes the same exact nam
 shows the current one.
 
 ```vim
-:Hive set model mistral-small-latest
+:Hive set model deepseek-v4-pro
 :Hive set thinking high
 :Hive set thinking
 :Hive set tools read_disk write_disk edit bash grep find ls

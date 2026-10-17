@@ -17,16 +17,16 @@
 ---@field defaults fun(): Hive.DefaultOptions copy of the hard-coded defaults
 ---@field setup fun(opts?: Hive.UserOptions) setup the plugin configuration
 ---@field resolve_api_key fun(): string|nil, "config"|"env"|nil bearer token and where it came from
----@field resolve_agent_api_key fun(): string|nil Mistral key for the `:Hive` agent
+---@field resolve_agent_api_key fun(): string|nil DeepSeek key for the `:Hive` agent
 ---@field thinking_levels Hive.ThinkingLevel[] every level Pi accepts, lowest first
 
 ---@alias Hive.ThinkingLevel "off"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"
 
 ---@class Hive.AgentOptions
----@field model string Mistral model id from Pi's catalogue
+---@field model string DeepSeek model id from Pi's catalogue
 ---@field thinking Hive.ThinkingLevel thinking level, clamped by Pi to what the model supports
 ---@field tools string[] active tools, from `require("hive.config").tools`
----@field api_key string|fun(): string|nil Mistral key, or a function returning one
+---@field api_key string|fun(): string|nil DeepSeek key, or a function returning one
 ---@field api_key_env string environment variable read when `api_key` is unset
 
 ---@class Hive.UserOptions

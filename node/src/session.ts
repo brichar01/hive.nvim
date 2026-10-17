@@ -27,7 +27,7 @@ const log = createLogger("session");
 
 export const KEY_ENV = "HIVE_AGENT_API_KEY";
 
-export const PROVIDER = "mistral";
+export const PROVIDER = "deepseek";
 
 export type ThinkingLevel = AgentSession["thinkingLevel"];
 
@@ -71,6 +71,7 @@ export const TOOL_REGISTRY: readonly ToolSpec[] = [
   { name: "ls", exposure: "codemode" },
   { name: "read_disk", exposure: "deferred" },
   { name: "write_disk", exposure: "deferred" },
+  { name: "ddgr_search", exposure: "direct" },
 ];
 
 /** Every registered tool name. Matches `tools` in lua/hive/config.lua. */
@@ -85,6 +86,7 @@ export const DEFAULT_TOOLS = [
   "grep",
   "find",
   "ls",
+  "ddgr_search",
 ];
 
 /** Whether `name` matches `pattern`, where `*` matches any characters, as in Pi's `--tools`. */
@@ -187,7 +189,7 @@ export interface SessionOptions {
   agentDir?: string;
   /** Pi settings for the session. Nothing is read from Pi's settings files. */
   settings?: Parameters<typeof SettingsManager.inMemory>[0];
-  /** Replaces the catalogue's `https://api.mistral.ai`, for a stub server. */
+  /** Replaces the catalogue's `https://api.deepseek.com`, for a stub server. */
   baseUrl?: string;
 }
 
@@ -416,14 +418,14 @@ async function createSession(
     modelsPath: null,
     refreshOnCreate: false,
   });
-  // With no key, Pi falls back to `MISTRAL_API_KEY` in the service's environment.
+  // With no key, Pi falls back to `DEEPSEEK_API_KEY` in the service's environment.
   if (apiKey) {
     await runtime.setRuntimeApiKey(PROVIDER, apiKey);
   }
 
   const model = runtime.getModel(PROVIDER, request.model);
   if (!model) {
-    throw new Error(`unknown Mistral model: ${request.model}`);
+    throw new Error(`unknown DeepSeek model: ${request.model}`);
   }
 
   const { cwd } = request;

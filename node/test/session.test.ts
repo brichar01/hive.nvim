@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -21,10 +21,30 @@ import {
 } from "../src/session.ts";
 
 const sandbox = mkdtempSync(join(tmpdir(), "hive-session-"));
+// The embedded session discovers extensions from `<agentDir>/extensions`. Stub the tool the
+// default set expects, so `DEFAULT_TOOLS` matches what a session can actually activate.
+mkdirSync(join(sandbox, "extensions"), { recursive: true });
+writeFileSync(
+  join(sandbox, "extensions", "ddgr.ts"),
+  `import { defineTool } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+export default function (pi) {
+  pi.registerTool(defineTool({
+    name: "ddgr_search",
+    label: "DuckDuckGo Search",
+    description: "Search the web",
+    parameters: Type.Object({ query: Type.String() }),
+    async execute() {
+      return { content: [{ type: "text", text: "ok" }], details: {} };
+    },
+  }));
+}
+`,
+);
 process.env.PI_OFFLINE = "1";
-Reflect.deleteProperty(process.env, "MISTRAL_API_KEY");
+Reflect.deleteProperty(process.env, "DEEPSEEK_API_KEY");
 
-// ------- Stub Mistral server -------
+// ------- Stub DeepSeek server -------
 
 interface StubBody {
   model?: string;
@@ -101,7 +121,7 @@ function fakeNvim(): { nvim: NvimConnection; events: ForwardedEvent[] } {
 
 const request = (text: string): PromptRequest => ({
   text,
-  model: "codestral-latest",
+  model: "deepseek-flash",
   thinking: "off",
   workbench: "project-20261004000000",
   cwd: sandbox,
@@ -152,6 +172,7 @@ test("every registered tool has a spec", () => {
   assert.deepEqual(new Set(TOOLS).size, TOOLS.length);
   assert.deepEqual([...TOOLS].sort(), [
     "bash",
+    "ddgr_search",
     "edit",
     "find",
     "grep",
@@ -189,7 +210,7 @@ test("a prompt streams text deltas and ends", async () => {
   ]);
   assert.deepEqual(
     requests.map((r) => [r.url, r.headers.authorization]),
-    [["/v1/chat/completions", "Bearer runtime-key"]],
+    [["/chat/completions", "Bearer runtime-key"]],
   );
 });
 
@@ -210,7 +231,7 @@ test("a model missing from Pi's catalogue ends with an error", async () => {
   });
 
   assert.deepEqual(events, [
-    { type: "end", error: "unknown Mistral model: no-such-model" },
+    { type: "end", error: "unknown DeepSeek model: no-such-model" },
   ]);
 });
 
@@ -236,7 +257,7 @@ test("the thinking level reaches a model that reasons", async () => {
   const { nvim } = fakeNvim();
   await createSessions("k", options()).prompt(nvim, {
     ...request("hello"),
-    model: "mistral-small-latest",
+    model: "deepseek-v4-pro",
     thinking: "high",
   });
 
@@ -246,7 +267,7 @@ test("the thinking level reaches a model that reasons", async () => {
 test("a thinking change keeps the session and its history", async () => {
   const { nvim } = fakeNvim();
   const sessions = createSessions("k", options());
-  const small = { ...request("one"), model: "mistral-small-latest" };
+  const small = { ...request("one"), model: "deepseek-flash" };
   await sessions.prompt(nvim, small);
   await sessions.prompt(nvim, { ...small, text: "two", thinking: "low" });
 
@@ -256,9 +277,9 @@ test("a thinking change keeps the session and its history", async () => {
       r.body.messages?.filter((m) => m.role !== "system").length,
     ]),
     [
-      // Pi 1.1.0 sends an explicit "none" for a reasoning model at thinking level "off".
-      ["none", 1],
-      ["high", 3],
+      // DeepSeek omits `reasoning_effort` at thinking level "off".
+      [undefined, 1],
+      ["low", 3],
     ],
   );
 });
@@ -315,7 +336,7 @@ test("a model change starts a new session", async () => {
   await sessions.prompt(nvim, request("one"));
   await sessions.prompt(nvim, {
     ...request("two"),
-    model: "mistral-small-latest",
+    model: "deepseek-v4-pro",
   });
 
   assert.deepEqual(
@@ -324,8 +345,8 @@ test("a model change starts a new session", async () => {
       r.body.messages?.filter((m) => m.role !== "system").length,
     ]),
     [
-      ["codestral-latest", 1],
-      ["mistral-small-latest", 1],
+      ["deepseek-flash", 1],
+      ["deepseek-v4-pro", 1],
     ],
   );
 });

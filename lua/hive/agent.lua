@@ -185,7 +185,7 @@ function M.settings()
 end
 
 ---Override the model for later prompts. A different model starts a new session on the next prompt.
----@param model string Mistral model id from Pi's catalogue
+---@param model string DeepSeek model id from Pi's catalogue
 ---@return string|nil err
 function M.set_model(model)
   if model == "" then
