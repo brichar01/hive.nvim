@@ -196,6 +196,57 @@ export type ForwardedEvent =
   | { type: "tool_end"; name: string; isError: boolean }
   | { type: "end"; error?: string };
 
+/** How much streamed text Neovim waits for before it sees a chunk. */
+const STREAM_CHUNK_LINES = 3;
+const STREAM_CHUNK_CHARS = 512;
+
+type StreamKind = "thinking" | "text";
+
+export interface Chunker {
+  (event: ForwardedEvent): ForwardedEvent[];
+  /** Send whatever is buffered now, in stream order. */
+  flush: () => ForwardedEvent[];
+}
+
+/**
+ * Coalesce streamed deltas into chunks of a few lines, so Neovim makes one RPC and one buffer
+ * update per chunk instead of one per token. Every other event flushes what is buffered and
+ * passes through in order, so the start and end events keep their current timing.
+ */
+export function createChunker(): Chunker {
+  const buffers: Record<StreamKind, string> = { thinking: "", text: "" };
+
+  const flush = (kind: StreamKind): ForwardedEvent[] => {
+    const delta = buffers[kind];
+    if (delta === "") {
+      return [];
+    }
+    buffers[kind] = "";
+    return [{ type: kind, delta }];
+  };
+  const flushAll = (): ForwardedEvent[] => [
+    ...flush("thinking"),
+    ...flush("text"),
+  ];
+  const ready = (kind: StreamKind): boolean => {
+    const buffered = buffers[kind];
+    return (
+      buffered.length >= STREAM_CHUNK_CHARS ||
+      (buffered.match(/\n/g)?.length ?? 0) >= STREAM_CHUNK_LINES
+    );
+  };
+
+  const chunk = (event: ForwardedEvent): ForwardedEvent[] => {
+    if (event.type === "text" || event.type === "thinking") {
+      buffers[event.type] += event.delta;
+      return ready(event.type) ? flush(event.type) : [];
+    }
+    return [...flushAll(), event];
+  };
+  chunk.flush = flushAll;
+  return chunk;
+}
+
 export interface SessionOptions {
   /** Pi's global config directory. Defaults to Pi's own, `~/.pi/agent`. */
   agentDir?: string;
@@ -506,6 +557,8 @@ export function createSessions(
     session: AgentSession;
     /** Resolves once every event so far has been forwarded. */
     drained: () => Promise<void>;
+    /** Send any buffered stream text before an error ends the prompt. */
+    flush: () => void;
   }
   const clients = new WeakMap<NvimConnection, Map<string, Workbench>>();
 
@@ -567,15 +620,27 @@ export function createSessions(
 
     // Each event is forwarded a microtask after its listener, in order, so a message_end sees its saved entry.
     let queue = Promise.resolve();
+    const chunker = createChunker();
     session.subscribe((event) => {
       queue = queue.then(() => {
         const forwarded = forward(event, idOf, argsOf);
         if (forwarded) {
-          send(nvim, forwarded);
+          for (const chunk of chunker(forwarded)) {
+            send(nvim, chunk);
+          }
         }
       });
     });
-    const workbench = { model: request.model, session, drained: () => queue };
+    const workbench = {
+      model: request.model,
+      session,
+      drained: () => queue,
+      flush: () => {
+        for (const chunk of chunker.flush()) {
+          send(nvim, chunk);
+        }
+      },
+    };
     workbenches.set(request.workbench, workbench);
     return workbench;
   };
@@ -587,6 +652,7 @@ export function createSessions(
         await session.prompt(request.text);
         await drained();
       } catch (err) {
+        clients.get(nvim)?.get(request.workbench)?.flush();
         send(nvim, {
           type: "end",
           error: err instanceof Error ? err.message : String(err),

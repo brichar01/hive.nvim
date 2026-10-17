@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import type { NvimConnection } from "../src/nvim_wrapper.ts";
 import {
+  createChunker,
   createSessions,
   DEFAULT_TOOLS,
   type ForwardedEvent,
@@ -204,8 +205,7 @@ test("a prompt streams text deltas and ends", async () => {
     { type: "message_end", role: "user", id: ids[0], hint: "hello" },
     { type: "message_start", role: "assistant" },
     { type: "text_start" },
-    { type: "text", delta: "Hel" },
-    { type: "text", delta: "lo" },
+    { type: "text", delta: "Hello" },
     { type: "message_end", role: "assistant", id: ids[1], hint: "Hello" },
     { type: "end" },
   ]);
@@ -366,6 +366,37 @@ test("each workbench keeps its own session", async () => {
     ),
     [1, 1, 3],
   );
+});
+
+test("the chunker batches thinking into a few lines and flushes at its end", () => {
+  const chunk = createChunker();
+
+  assert.deepEqual(chunk({ type: "thinking_start" }), [
+    { type: "thinking_start" },
+  ]);
+  assert.deepEqual(chunk({ type: "thinking", delta: "one\ntwo\n" }), []);
+  assert.deepEqual(chunk({ type: "thinking", delta: "three\n" }), [
+    { type: "thinking", delta: "one\ntwo\nthree\n" },
+  ]);
+  assert.deepEqual(chunk({ type: "thinking", delta: "tail" }), []);
+  assert.deepEqual(chunk({ type: "thinking_end" }), [
+    { type: "thinking", delta: "tail" },
+    { type: "thinking_end" },
+  ]);
+});
+
+test("the chunker flushes a long line and passes boundaries through", () => {
+  const chunk = createChunker();
+
+  assert.deepEqual(chunk({ type: "text_start" }), [{ type: "text_start" }]);
+  assert.deepEqual(chunk({ type: "text", delta: "x".repeat(512) }), [
+    { type: "text", delta: "x".repeat(512) },
+  ]);
+  assert.deepEqual(chunk({ type: "text", delta: "reply" }), []);
+  assert.deepEqual(chunk({ type: "tool_start", call: "c1", name: "read", args: {} }), [
+    { type: "text", delta: "reply" },
+    { type: "tool_start", call: "c1", name: "read", args: {} },
+  ]);
 });
 
 test("forward passes thinking through, and a tool result's text with its start", () => {
