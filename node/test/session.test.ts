@@ -203,6 +203,7 @@ test("a prompt streams text deltas and ends", async () => {
   assert.deepEqual(events, [
     { type: "message_end", role: "user", id: ids[0], hint: "hello" },
     { type: "message_start", role: "assistant" },
+    { type: "text_start" },
     { type: "text", delta: "Hel" },
     { type: "text", delta: "lo" },
     { type: "message_end", role: "assistant", id: ids[1], hint: "Hello" },
@@ -372,6 +373,12 @@ test("forward passes thinking through, and a tool result's text with its start",
   const update = (assistantMessageEvent: object) =>
     ({ type: "message_update", message: {}, assistantMessageEvent }) as never;
 
+  assert.deepEqual(forward(update({ type: "thinking_start" }), none), {
+    type: "thinking_start",
+  });
+  assert.deepEqual(forward(update({ type: "text_start" }), none), {
+    type: "text_start",
+  });
   assert.deepEqual(
     forward(update({ type: "thinking_delta", delta: "hmm" }), none),
     { type: "thinking", delta: "hmm" },

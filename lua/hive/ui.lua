@@ -24,6 +24,9 @@ local pending = {}
 ---@type table<string, Hive.Ui.Call>
 local calls = {}
 
+---Whether a thinking block is open, so its end marker lands before the reply.
+local thinking_open = false
+
 local END_TAG = "^<!%-%- hive:end (%S+) %-%->$"
 
 local FOLDMARKER = "hive:entry,hive:end"
@@ -81,6 +84,7 @@ function M.open()
   buf = load(path)
   pending = {}
   calls = {}
+  thinking_open = false
 
   if vim.fn.bufwinid(buf) == -1 then
     vim.cmd("vsplit")
@@ -123,6 +127,34 @@ local function last_line()
   return row, vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
 end
 
+---Append `text` on a line of its own, starting a new line when the last one has text.
+---@param text string
+function M.append_line(text)
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    M.open()
+  end
+  local _, tail = last_line()
+  M.append((tail == "" and "" or "\n") .. text .. "\n")
+end
+
+---Open a thinking block, marked so the reply that follows does not merge with it.
+function M.start_thinking()
+  if thinking_open then
+    return
+  end
+  M.append_line("<!-- hive:thinking:start -->")
+  thinking_open = true
+end
+
+---Close the open thinking block, at the reply's start or the thinking's own end.
+function M.end_thinking()
+  if not thinking_open then
+    return
+  end
+  M.append_line("<!-- hive:thinking:end -->")
+  thinking_open = false
+end
+
 ---Mark where the message for `role` starts. Without `row`, it starts on a new line at the end.
 ---@param role string
 ---@param row? integer 0-based row the message's text starts on
@@ -131,6 +163,10 @@ function M.mark_start(role, row)
     M.open()
   end
   ---@cast buf integer
+
+  if role == "assistant" then
+    thinking_open = false
+  end
 
   if not row then
     local tail

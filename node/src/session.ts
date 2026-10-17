@@ -27,6 +27,16 @@ const log = createLogger("session");
 
 export const KEY_ENV = "HIVE_AGENT_API_KEY";
 
+const HIVE_SYSTEM_PROMPT = "## The Hive Agent Harness\n" +
+  "The harness you have access to has three modified tools, the read, write and update tools have been modified \n" +
+  "so that they write directly to an attached Neovim's buffers and not to the filesystem, this is so it can be \n" +
+  "reviewed as it goes. Instead, tool calls to writes and updates will respond with the any available \n" +
+  "lsp errors. Fix them, then stop for review, when review is complete, the next prompt will \n" +
+  "include the diff against the last update and instruction on how to proceed, such as what and how to test. \n" +
+  "Some prompts will bypass buffers, this is a privilege not a right, these tools will be registered for that \n" +
+  "prompt, and for this time, stay laser focussed with it's use, treat the current code the source of truth and \n" +
+  "if you find a feature that doesn't serve the task at hand or uncover a bug or issue in the source, stop.";
+
 export const PROVIDER = "deepseek";
 
 export type ThinkingLevel = AgentSession["thinkingLevel"];
@@ -177,7 +187,9 @@ export type ForwardedEvent =
   | { type: "message_start"; role: TaggedRole; text?: string; call?: string }
   /** `hint` says what the message holds, for its entry tag. */
   | { type: "message_end"; role: TaggedRole; id: string; hint: string }
+  | { type: "text_start" }
   | { type: "text"; delta: string }
+  | { type: "thinking_start" }
   | { type: "thinking"; delta: string }
   | { type: "thinking_end" }
   | { type: "tool_start"; call: string; name: string; args: unknown }
@@ -294,8 +306,12 @@ function handleMessageUpdate(event: {
 }): ForwardedEvent | undefined {
   const update = event.assistantMessageEvent;
   switch (update.type) {
+    case "text_start":
+      return { type: "text_start" };
     case "text_delta":
       return { type: "text", delta: update.delta || "" };
+    case "thinking_start":
+      return { type: "thinking_start" };
     case "thinking_delta":
       return { type: "thinking", delta: update.delta || "" };
     case "thinking_end":
@@ -434,6 +450,8 @@ async function createSession(
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir: options.agentDir ?? getAgentDir(),
+    // Replace the base prompt:
+    systemPromptOverride: (base) => `${base || ""}` + "\n\n" + HIVE_SYSTEM_PROMPT,
     settingsManager,
     extensionFactories: [
       { name: "hive-diagnostics", factory: diagnosticsExtension(nvim, cwd) },

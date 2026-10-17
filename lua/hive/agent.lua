@@ -270,7 +270,7 @@ function M.on_echo(text)
 end
 
 ---@class Hive.Agent.Event
----@field type "message_start"|"message_end"|"text"|"thinking"|"thinking_end"|"tool_start"|"tool_end"|"end"
+---@field type "message_start"|"message_end"|"text_start"|"text"|"thinking_start"|"thinking"|"thinking_end"|"tool_start"|"tool_end"|"end"
 ---@field text? string a tool result's output, on its message_start
 ---@field role? "user"|"assistant"|"toolResult"
 ---@field id? string session entry id
@@ -296,15 +296,20 @@ function M.on_event(event)
     end
   elseif event.type == "message_end" then
     ui.tag(event.role, event.id, event.hint)
+  elseif event.type == "thinking_start" then
+    ui.start_thinking()
+  elseif event.type == "text_start" then
+    ui.end_thinking()
   elseif event.type == "text" then
     ui.append_reply(event.delta)
   elseif event.type == "thinking" then
     ui.append(event.delta)
   elseif event.type == "thinking_end" then
-    ui.append("\n")
+    ui.end_thinking()
   elseif event.type == "tool_start" then
     ui.add_call(event.call, ("`%s %s`"):format(event.name, vim.json.encode(event.args)))
   elseif event.type == "end" then
+    ui.end_thinking()
     if event.error then
       ui.append("\n**Error:** " .. event.error)
       require("hive.util").error("Hive prompt: " .. event.error)
