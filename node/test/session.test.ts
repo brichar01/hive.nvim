@@ -7,11 +7,12 @@ import { join } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import type { NvimConnection } from "../src/nvim_wrapper.ts";
 import {
-  callLine,
   createChunker,
   createRouter,
   createSessions,
   DEFAULT_TOOLS,
+  endLine,
+  entryLine,
   type ForwardedEvent,
   forward,
   KEY_ENV,
@@ -239,14 +240,18 @@ test("a prompt streams text deltas and ends", async () => {
   const { nvim, events } = fakeNvim();
   await createSessions("runtime-key", options()).prompt(nvim, request("hello"));
 
-  const ids = events.flatMap((e) => (e.type === "message_end" ? [e.id] : []));
-  assert.equal(ids.length, 2);
+  const header = events.flatMap((e) => (e.type === "message_end" ? e.header : []));
+  const you = header.find((line) => line.startsWith("You (")) ?? "";
+  const response = header.find((line) => line.startsWith("Response (")) ?? "";
+  assert.match(you, /^You \([0-9a-f]{8}\):$/);
+  assert.match(response, /^Response \([0-9a-f]{8}\):$/);
+
   assert.deepEqual(events, [
-    { type: "message_end", role: "user", id: ids[0], hint: "hello" },
+    { type: "message_end", role: "user", header: ["", you] },
     { type: "message_start", role: "assistant" },
     { type: "text", delta: "Hello" },
-    { type: "message_end", role: "assistant", id: ids[1], hint: "Hello" },
-    { type: "end" },
+    { type: "message_end", role: "assistant", header: ["", response] },
+    { type: "end", footer: `End response to ${you.slice(5, 13)}` },
   ]);
   assert.deepEqual(
     requests.map((r) => [r.url, r.headers.authorization]),
@@ -422,14 +427,18 @@ test("a prompt writes raw thinking to the workbench log", async () => {
     (event) => event.type === "message_end" && event.role === "assistant",
   );
   assert.ok(end?.type === "message_end");
-  assert.equal(end.thinking, `Thinking (${end.id.slice(0, 8)}): check the fold logic`);
+  assert.match(
+    end.header.join("\n"),
+    /^\nThinking \([0-9a-f]{8}\): check the fold logic\nResponse \([0-9a-f]{8}\):$/,
+  );
+  const id = end.header[1]?.slice(10, 18) ?? "";
 
   const lines = readFileSync(log, "utf-8").trim().split("\n");
   assert.equal(lines.length, 1);
   const { ts, ...entry } = JSON.parse(lines[0] ?? "{}") as Record<string, unknown>;
   assert.equal(typeof ts, "string");
   assert.deepEqual(entry, {
-    id: end.id,
+    id,
     type: "thinking",
     text: "check the fold logic",
   });
@@ -488,9 +497,17 @@ test("thinkingLine keys the summary by the start of the entry id", () => {
   assert.equal(thinkingLine("short", "hmm"), "Thinking (short): hmm");
 });
 
-test("callLine shows the tool's name and arguments", () => {
-  assert.equal(callLine("read", { path: "a.lua" }), '`read {"path":"a.lua"}`');
-  assert.equal(callLine("ls", undefined), "`ls null`");
+test("entryLine names the role and the entry, and a tool result what it found", () => {
+  assert.equal(entryLine("user", "763328b4-rest"), "You (763328b4):");
+  assert.equal(entryLine("assistant", "763328b4-rest"), "Response (763328b4):");
+  assert.equal(
+    entryLine("toolResult", "ab12cd34-rest", 'grep "hive" lua/: 4 matches'),
+    'Tool (ab12cd34): grep "hive" lua/: 4 matches',
+  );
+});
+
+test("endLine names the prompt a reply answers", () => {
+  assert.equal(endLine("763328b4-rest"), "End response to 763328b4");
 });
 
 test("the router logs raw thinking and shows it as one line", () => {
@@ -500,7 +517,13 @@ test("the router logs raw thinking and shows it as one line", () => {
   router({ type: "thinking", delta: "check the " });
   router({ type: "thinking", delta: "fold logic" });
   router({ type: "text", delta: "Hello" });
-  router({ type: "message_end", role: "assistant", id: "763328b4", hint: "Hello" });
+  router({
+    type: "message_end",
+    role: "assistant",
+    id: "763328b4",
+    hint: "Hello",
+    text: true,
+  });
 
   assert.deepEqual(events, [
     { type: "message_start", role: "assistant" },
@@ -508,9 +531,11 @@ test("the router logs raw thinking and shows it as one line", () => {
     {
       type: "message_end",
       role: "assistant",
-      id: "763328b4",
-      hint: "Hello",
-      thinking: "Thinking (763328b4): check the fold logic",
+      header: [
+        "",
+        "Thinking (763328b4): check the fold logic",
+        "Response (763328b4):",
+      ],
     },
   ]);
   assert.deepEqual(logged, [
@@ -518,42 +543,95 @@ test("the router logs raw thinking and shows it as one line", () => {
   ]);
 });
 
-test("the router moves a call's line into its result, and logs the call", () => {
-  const { events, logged, router } = fakeRouter();
+test("the router gives a message without text no line of its own", () => {
+  const { events, router } = fakeRouter();
 
-  router({ type: "message_end", role: "assistant", id: "763328b4", hint: "read" });
-  router({ type: "tool_start", call: "c1", name: "read", args: { path: "a.lua" } });
-  router({ type: "message_start", role: "toolResult", text: "line", call: "c1" });
-  router({ type: "message_end", role: "toolResult", id: "ab12cd34", hint: "read a.lua" });
+  router({ type: "message_start", role: "assistant" });
+  router({
+    type: "message_end",
+    role: "assistant",
+    id: "763328b4",
+    hint: "1 tool call",
+    text: false,
+  });
 
   assert.deepEqual(events, [
-    { type: "message_end", role: "assistant", id: "763328b4", hint: "read" },
+    { type: "message_start", role: "assistant" },
+    { type: "message_end", role: "assistant", header: [] },
+  ]);
+});
+
+test("a tool result's line says what the call found, and the call is logged", () => {
+  const { events, logged, router } = fakeRouter();
+
+  router({
+    type: "message_end",
+    role: "assistant",
+    id: "763328b4",
+    hint: "read",
+    text: false,
+  });
+  router({ type: "tool_start", call: "c1", name: "read", args: { path: "a.lua" } });
+  router({ type: "message_start", role: "toolResult" });
+  router({
+    type: "message_end",
+    role: "toolResult",
+    id: "ab12cd34",
+    hint: "read a.lua:20-60",
+    text: true,
+  });
+
+  assert.deepEqual(events, [
+    { type: "message_end", role: "assistant", header: [] },
+    { type: "message_start", role: "toolResult" },
     {
-      type: "message_start",
+      type: "message_end",
       role: "toolResult",
-      text: '`read {"path":"a.lua"}`\nline',
+      header: ["", "Tool (ab12cd34): read a.lua:20-60"],
     },
-    { type: "message_end", role: "toolResult", id: "ab12cd34", hint: "read a.lua" },
   ]);
   assert.deepEqual(logged, [
     { type: "tool_call", id: "763328b4", name: "read", args: { path: "a.lua" } },
   ]);
 });
 
-test("the router carries every call in a batch into its own result", () => {
+test("the router logs every call in a batch, and each result gets its own line", () => {
   const { events, logged, router } = fakeRouter();
 
-  router({ type: "message_end", role: "assistant", id: "763328b4", hint: "two calls" });
+  router({
+    type: "message_end",
+    role: "assistant",
+    id: "763328b4",
+    hint: "two calls",
+    text: false,
+  });
   router({ type: "tool_start", call: "c1", name: "read", args: { path: "a.lua" } });
   router({ type: "tool_start", call: "c2", name: "bash", args: { command: "true" } });
-  router({ type: "message_start", role: "toolResult", text: "one", call: "c1" });
-  router({ type: "message_end", role: "toolResult", id: "t1", hint: "read a.lua" });
-  router({ type: "message_start", role: "toolResult", text: "two", call: "c2" });
-  router({ type: "message_end", role: "toolResult", id: "t2", hint: "bash true" });
+  router({ type: "message_start", role: "toolResult" });
+  router({
+    type: "message_end",
+    role: "toolResult",
+    id: "t1",
+    hint: "read a.lua:2 lines",
+    text: true,
+  });
+  router({ type: "message_start", role: "toolResult" });
+  router({
+    type: "message_end",
+    role: "toolResult",
+    id: "t2",
+    hint: "bash true (exit 1)",
+    text: true,
+  });
 
   assert.deepEqual(
-    events.flatMap((event) => (event.type === "message_start" ? [event.text] : [])),
-    ['`read {"path":"a.lua"}`\none', '`bash {"command":"true"}`\ntwo'],
+    events.flatMap((event) => (event.type === "message_end" ? event.header : [])),
+    [
+      "",
+      "Tool (t1): read a.lua:2 lines",
+      "",
+      "Tool (t2): bash true (exit 1)",
+    ],
   );
   assert.deepEqual(logged, [
     { type: "tool_call", id: "763328b4", name: "read", args: { path: "a.lua" } },
@@ -566,20 +644,50 @@ test("the router keeps each assistant message's thinking apart", () => {
 
   router({ type: "message_start", role: "assistant" });
   router({ type: "thinking", delta: "first" });
-  router({ type: "message_end", role: "assistant", id: "aaaaaaaa", hint: "one" });
+  router({
+    type: "message_end",
+    role: "assistant",
+    id: "aaaaaaaa",
+    hint: "one",
+    text: false,
+  });
   router({ type: "message_start", role: "assistant" });
   router({ type: "thinking", delta: "second" });
-  router({ type: "message_end", role: "assistant", id: "bbbbbbbb", hint: "two" });
+  router({
+    type: "message_end",
+    role: "assistant",
+    id: "bbbbbbbb",
+    hint: "two",
+    text: false,
+  });
 
   assert.deepEqual(
     events.flatMap((event) =>
-      event.type === "message_end" ? [event.thinking] : []
+      event.type === "message_end" ? event.header.slice(1) : []
     ),
     ["Thinking (aaaaaaaa): first", "Thinking (bbbbbbbb): second"],
   );
   assert.deepEqual(logged, [
     { type: "thinking", id: "aaaaaaaa", text: "first" },
     { type: "thinking", id: "bbbbbbbb", text: "second" },
+  ]);
+});
+
+test("the router ends the turn with the prompt it answered", () => {
+  const { events, router } = fakeRouter();
+
+  router({
+    type: "message_end",
+    role: "user",
+    id: "aaaaaaaa-rest",
+    hint: "hello",
+    text: true,
+  });
+  router({ type: "end" });
+
+  assert.deepEqual(events, [
+    { type: "message_end", role: "user", header: ["", "You (aaaaaaaa):"] },
+    { type: "end", footer: "End response to aaaaaaaa" },
   ]);
 });
 
@@ -592,7 +700,7 @@ test("the router flushes buffered text on demand", () => {
   assert.deepEqual(events, [{ type: "text", delta: "tail" }]);
 });
 
-test("forward passes thinking and text through, and a tool result's text with its call", () => {
+test("forward passes thinking and text through, but never a tool result's output", () => {
   const none = (): undefined => undefined;
   const update = (assistantMessageEvent: object) =>
     ({ type: "message_update", message: {}, assistantMessageEvent }) as never;
@@ -612,7 +720,6 @@ test("forward passes thinking and text through, and a tool result's text with it
         type: "message_start",
         message: {
           role: "toolResult",
-          toolCallId: "c1",
           content: [
             { type: "text", text: "a" },
             { type: "image" },
@@ -622,6 +729,6 @@ test("forward passes thinking and text through, and a tool result's text with it
       } as never,
       none,
     ),
-    { type: "message_start", role: "toolResult", text: "a\nb", call: "c1" },
+    { type: "message_start", role: "toolResult" },
   );
 });

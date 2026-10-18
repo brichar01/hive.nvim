@@ -222,19 +222,20 @@ The conversation goes into the project's newest workbench, the same one
 `:HiveContext workbench new` starts a new conversation. Neovim does not save the
 workbench for you.
 
-Each message in the workbench sits between `<!-- hive:entry <id> <hint> -->` and
-`<!-- hive:end <id> -->`. The id is the message's entry in the agent session, and the
-hint says what the message holds. For a prompt or a reply it is the first 20
-characters of its text. For a tool it is what the call acted on and what it found,
-such as `read lua/hive/ui.lua:20-60`, `grep "hive" lua/: 4 matches` or
-`bash npm test (exit 1)`, and the call itself is the first line of its result.
+Each message in the workbench starts with a line naming it and its entry in the
+agent session: `You (aaaaaaaa):` for a prompt, `Response (dddddddd):` for a reply
+and `Tool (cccccccc): grep "hive" lua/: 4 matches` for a tool result, which says
+what the call acted on and what it found. The hash is the first eight characters
+of the entry id. A message's thinking shows as one line above its reply,
+`Thinking (bbbbbbbb): check the fold logic`.
 
-A message's thinking shows as one line under its entry tag,
-`Thinking (763328b4): check the fold logic`, where the hash is the entry id. The
-raw thinking, and every tool call, goes to `<workbench>.log` beside the workbench
+The raw thinking and every tool call go to `<workbench>.log` beside the workbench
 instead: one JSON object per line, with the entry id, a timestamp and a type of
-either `thinking` or `tool_call`. To chat in the workbench itself, write below the last `hive:end` tag and run
-`:Hive chat`. It sends that text as the prompt and appends the reply below it.
+either `thinking` or `tool_call`. A tool result's output stays out of the buffer
+too, so its line is only what the call found. A reply ends with `End response to aaaaaaaa`,
+naming the prompt it answered. To chat in the workbench itself, write below that
+line and run `:Hive chat`. It sends that text as the prompt and appends the reply
+below it.
 
 To change the model, thinking level or tools until Neovim exits, use `:Hive set`. A
 new model starts a new session, and the conversation history is lost. A new thinking

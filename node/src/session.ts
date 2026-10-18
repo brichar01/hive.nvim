@@ -18,7 +18,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { diagnosticsExtension } from "./diagnostics.ts";
-import { type ArgsOf, hint, type HintMessage } from "./hint.ts";
+import { type ArgsOf, hint, type HintMessage, textOf } from "./hint.ts";
 import { createLogger } from "./log.ts";
 import { createNvimOperations } from "./nvim_ops.ts";
 import type { NvimConnection } from "./nvim_wrapper.ts";
@@ -181,34 +181,35 @@ export interface PromptRequest {
   log: string;
 }
 
-/** Messages that get an entry tag in the workbench. */
+/** Messages that get a header line in the workbench. */
 export type TaggedRole = "user" | "assistant" | "toolResult";
 
 /** What a session's events become before routing: what Neovim needs, and what it does not. */
 export type SessionEvent =
-  /** `text` is a tool result's output, which arrives whole. `call` is its tool call's id. */
-  | { type: "message_start"; role: TaggedRole; text?: string; call?: string }
-  /** `hint` says what the message holds, for its entry tag. */
-  | { type: "message_end"; role: TaggedRole; id: string; hint: string }
+  /** A message's start, which Neovim marks so its header can go above it. */
+  | { type: "message_start"; role: TaggedRole }
+  /** `hint` says what the message holds, `text` whether it has text of its own, for its header. */
+  | {
+      type: "message_end";
+      role: TaggedRole;
+      id: string;
+      hint: string;
+      text: boolean;
+    }
   | { type: "text"; delta: string }
   /** Raw thinking, which goes to the workbench's log instead of into its buffer. */
   | { type: "thinking"; delta: string }
   | { type: "tool_start"; call: string; name: string; args: unknown }
   | { type: "end"; error?: string };
 
-/** What Neovim is sent. */
+/** What Neovim is sent, with the lines it shows already made. */
 export type ForwardedEvent =
-  | { type: "message_start"; role: TaggedRole; text?: string }
-  /** `thinking` is the message's thinking on one line, under its entry tag. */
-  | {
-      type: "message_end";
-      role: TaggedRole;
-      id: string;
-      hint: string;
-      thinking?: string;
-    }
+  | { type: "message_start"; role: TaggedRole }
+  /** `header` goes above the message's text, as it is. */
+  | { type: "message_end"; role: TaggedRole; header: string[] }
   | { type: "text"; delta: string }
-  | { type: "end"; error?: string };
+  /** `footer` ends the reply, so the workbench knows what its unanswered text is. */
+  | { type: "end"; footer?: string; error?: string };
 
 /**
  * How much streamed text Neovim waits for before it sees a chunk. Both limits sit far above a
@@ -256,9 +257,14 @@ export function createChunker(): Chunker {
 /** How much of a thinking block Neovim shows, until a summary of it replaces it. */
 export const THINKING_PREVIEW_CHARS = 20;
 
-/** How Neovim shows a message's thinking, keyed by the entry the log holds it under. */
+/** The first eight characters of an entry id, as the workbench shows it. */
+export function shortId(id: string): string {
+  return id.slice(0, 8);
+}
+
+/** How the workbench shows a message's thinking, keyed by the entry the log holds it under. */
 export function thinkingLine(id: string, summary: string): string {
-  return `Thinking (${id.slice(0, 8)}): ${summary}`;
+  return `Thinking (${shortId(id)}): ${summary}`;
 }
 
 /** The first `THINKING_PREVIEW_CHARS` characters of `text`, on one line. */
@@ -266,9 +272,25 @@ export function preview(text: string): string {
   return text.replace(/\s+/g, " ").trim().slice(0, THINKING_PREVIEW_CHARS);
 }
 
-/** How Neovim shows a tool call: its name and its arguments. */
-export function callLine(name: string, args: unknown): string {
-  return "`" + name + " " + JSON.stringify(args ?? null) + "`";
+/** What each role is called in the workbench. */
+const ROLE_NAMES: Record<TaggedRole, string> = {
+  user: "You",
+  assistant: "Response",
+  toolResult: "Tool",
+};
+
+/**
+ * The line a message starts with: what it is, its entry id, and for a tool result what the call
+ * found. The id is the entry the log would hold the message's thinking or call under.
+ */
+export function entryLine(role: TaggedRole, id: string, hint = ""): string {
+  const head = `${ROLE_NAMES[role]} (${shortId(id)}):`;
+  return hint === "" ? head : `${head} ${hint}`;
+}
+
+/** The line that ends a reply, naming the prompt it answered. */
+export function endLine(prompt: string): string {
+  return `End response to ${shortId(prompt)}`;
 }
 
 export interface Router {
@@ -282,20 +304,20 @@ export interface Router {
 /**
  * Split a session's events by where they go: streamed text, message boundaries and the end go to
  * Neovim, while raw thinking and tool calls go to `log`, keyed by the entry of the message they
- * belong to. Neovim sees a message's thinking as one summary line, and a tool result with its call
- * on the line above it, so the buffer has no fold-guarded call lines to move.
+ * belong to. Neovim sees each message as a header line and its text, with a message's thinking as
+ * one summary line above it and a tool result's header saying what the call found.
  */
 export function createRouter(
   send: (event: ForwardedEvent) => void,
   log: WorkbenchLog,
 ): Router {
   const chunker = createChunker();
-  /** Display lines for calls whose result has not arrived, by tool call id. */
-  const calls = new Map<string, string>();
   /** The thinking of the message coming through, until its end. */
   let thinking = "";
   /** The id of the last assistant message, which the tools it starts belong to. */
   let entry: string | undefined;
+  /** The id of the prompt this turn answers, for the line that ends it. */
+  let prompt: string | undefined;
 
   const sendAll = (events: ForwardedEvent[]): void => {
     for (const event of events) {
@@ -308,8 +330,7 @@ export function createRouter(
       case "thinking":
         thinking += event.delta;
         return;
-      case "tool_start": {
-        calls.set(event.call, callLine(event.name, event.args));
+      case "tool_start":
         if (entry !== undefined) {
           void log.write({
             type: "tool_call",
@@ -319,48 +340,46 @@ export function createRouter(
           });
         }
         return;
-      }
       case "text":
         sendAll(chunker({ type: "text", delta: event.delta }));
         return;
-      case "message_start": {
-        // A call runs before its result arrives, so its line waits for the result's message.
-        let text = event.text ?? "";
-        if (event.call !== undefined) {
-          text = [calls.get(event.call), text]
-            .filter((part) => part !== undefined && part !== "")
-            .join("\n");
-          calls.delete(event.call);
-        }
-        sendAll(
-          chunker(
-            text === ""
-              ? { type: "message_start", role: event.role }
-              : { type: "message_start", role: event.role, text },
-          ),
-        );
+      case "message_start":
+        sendAll(chunker(event));
         return;
-      }
       case "message_end": {
-        let shown: ForwardedEvent = event;
+        const header: string[] = [];
         if (event.role === "assistant") {
           entry = event.id;
           const text = thinking;
           thinking = "";
           if (text !== "") {
             void log.write({ type: "thinking", id: event.id, text });
-            shown = {
-              ...event,
-              thinking: thinkingLine(event.id, preview(text)),
-            };
+            header.push(thinkingLine(event.id, preview(text)));
           }
+        } else if (event.role === "user") {
+          prompt = event.id;
         }
-        sendAll(chunker(shown));
+        // A message with no text of its own, such as one that only calls a tool, gets no line.
+        if (event.role !== "assistant" || event.text) {
+          const found = event.role === "toolResult" ? event.hint : "";
+          header.push(entryLine(event.role, event.id, found));
+        }
+        // A blank line keeps each message's block apart from the one before it.
+        sendAll(
+          chunker({
+            type: "message_end",
+            role: event.role,
+            header: header.length === 0 ? [] : ["", ...header],
+          }),
+        );
         return;
       }
-      case "end":
-        sendAll(chunker(event));
+      case "end": {
+        const ended: ForwardedEvent =
+          prompt === undefined ? event : { ...event, footer: endLine(prompt) };
+        sendAll(chunker(ended));
         return;
+      }
     }
   };
   router.flush = (): void => {
@@ -430,31 +449,13 @@ const isTagged = (role: string): role is TaggedRole =>
  */
 function handleMessageStart(event: {
   type: "message_start";
-  message: {
-    role: string;
-    content?: string | Array<{ type: string; text?: string }>;
-    toolCallId?: string;
-  };
+  message: { role: string };
 }): SessionEvent | undefined {
-  const { message } = event;
-  if (message.role === "toolResult" && message.content) {
-    const content =
-      typeof message.content === "string"
-        ? [{ type: "text", text: message.content }]
-        : message.content;
-    const text = content
-      .flatMap((c) => (c.type === "text" ? [c.text] : []))
-      .filter((text): text is string => text !== undefined)
-      .join("\n");
-    return {
-      type: "message_start",
-      role: "toolResult",
-      text,
-      call: message.toolCallId,
-    };
-  }
-  return message.role === "assistant"
-    ? { type: "message_start", role: "assistant" }
+  const { role } = event.message;
+  // A tool result's output is represented by the header `message_end` adds, so its body
+  // never reaches the workbench.
+  return role === "assistant" || role === "toolResult"
+    ? { type: "message_start", role }
     : undefined;
 }
 
@@ -470,6 +471,7 @@ function handleMessageEnd(
         role: event.message.role,
         id,
         hint: hint(event.message, argsOf),
+        text: textOf(event.message.content) !== "",
       }
     : undefined;
 }
@@ -507,7 +509,7 @@ function handleAgentEnd(event: {
   type: "agent_end";
   willRetry: boolean;
   messages: Array<{ role: string; errorMessage?: string }>;
-}): ForwardedEvent | undefined {
+}): SessionEvent | undefined {
   if (event.willRetry) {
     return undefined;
   }

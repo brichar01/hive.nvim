@@ -9,13 +9,13 @@ local buf = nil
 
 ---@class Hive.Ui.Pending
 ---@field start integer extmark on the message's first line
----@field finish? integer extmark on the message's last line, for a message written before it was sent
 
----Messages waiting for their entry id, by role.
+---Messages waiting for their header, by role.
 ---@type table<string, Hive.Ui.Pending>
 local pending = {}
 
-local END_TAG = "^<!%-%- hive:end (%S+) %-%->$"
+---The line the service writes at the end of a reply, naming the prompt it answered.
+local END_LINE = "^End response to (%S+)$"
 
 ---@param path string
 ---@return integer buf
@@ -99,18 +99,6 @@ function M.mark_start(role, row)
   pending[role] = { start = start }
 end
 
----Mark the last line of the `role` message, for one written before it was sent. Without one,
----the end tag goes at the end of the workbench.
----@param role string
----@param row? integer 0-based row, the last line by default
-function M.mark_end(role, row)
-  local p = pending[role]
-  if not (p and buf and vim.api.nvim_buf_is_valid(buf)) then
-    return
-  end
-  p.finish = vim.api.nvim_buf_set_extmark(buf, require("hive.config").ns, row or last_line(), 0, {})
-end
-
 ---@param mark integer|nil
 ---@return integer|nil row 0-based, nil once the mark is gone
 local function take(mark)
@@ -124,43 +112,23 @@ local function take(mark)
   return row
 end
 
----Wrap the `role` message in `<!-- hive:entry <id> <hint> -->` and `<!-- hive:end <id> -->`.
----The hint says what the message holds. A `thinking` line goes under the entry tag, keyed by
----the same id the workbench's log holds the raw text under.
+---Put `lines` above the `role` message, where it started.
 ---@param role string
----@param id string session entry id
----@param hint? string what the message holds
----@param thinking? string the message's thinking, on one line
-function M.tag(role, id, hint, thinking)
-  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
-    return
-  end
+---@param lines string[] header lines for the message
+function M.header(role, lines)
   local p = pending[role]
   pending[role] = nil
-
-  -- The end tag first, so inserting the entry tag cannot move it.
-  local end_tag = ("<!-- hive:end %s -->"):format(id)
-  local finish = take(p and p.finish)
-  if finish then
-    vim.api.nvim_buf_set_lines(buf, finish + 1, finish + 1, false, { end_tag })
-  else
-    local _, tail = last_line()
-    M.append((tail == "" and "" or "\n") .. end_tag .. "\n")
-  end
-
-  local start = take(p and p.start)
-  if not start then
+  if not (p and buf and vim.api.nvim_buf_is_valid(buf)) then
     return
   end
-  local entry = hint and hint ~= "" and ("%s %s"):format(id, hint) or id
-  local header = { ("<!-- hive:entry %s -->"):format(entry) }
-  if thinking then
-    header[#header + 1] = thinking
+  local start = take(p.start)
+  if not start or #lines == 0 then
+    return
   end
-  vim.api.nvim_buf_set_lines(buf, start, start, false, header)
+  vim.api.nvim_buf_set_lines(buf, start, start, false, lines)
 end
 
----The current workbench's text after its last `<!-- hive:end <id> -->`, or all of it without one.
+---The current workbench's text after its last `End response to <id>` line, or all of it without one.
 ---@return string text trimmed
 ---@return integer first 0-based row of the text's first non-blank line
 ---@return integer last 0-based row of the text's last non-blank line
@@ -172,7 +140,7 @@ function M.unanswered()
 
   local first = 1
   for i = #lines, 1, -1 do
-    if lines[i]:match(END_TAG) then
+    if lines[i]:match(END_LINE) then
       first = i + 1
       break
     end

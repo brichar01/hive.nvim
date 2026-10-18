@@ -18,7 +18,7 @@ export interface WorkbenchLog {
 /**
  * The workbench's backing file, next to it with a `.log` extension. Raw thinking and tool calls
  * go here instead of into the buffer, one JSON object per line. `id` is the message's entry, the
- * hash its `<!-- hive:entry -->` tag shows, so a line can be found from the message it belongs to.
+ * hash its header line shows, so a line can be found from the message it belongs to.
  */
 export function createWorkbenchLog(path: string): WorkbenchLog {
   let queue = Promise.resolve();

@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hint, type HintMessage, truncate } from "../src/hint.ts";
-
-const none = (): undefined => undefined;
+import { hint, truncate } from "../src/hint.ts";
 
 const result = (toolName: string, args: object, output: string, isError = false): string =>
   hint({ role: "toolResult", toolName, toolCallId: "c1", isError, content: [{ type: "text", text: output }] }, () => args);
@@ -12,28 +10,15 @@ test("truncate makes one line, and keeps a number of non-whitespace characters w
   assert.equal(truncate("abcdefghij klmnopqrstuvwxyz", 20), "abcdefghij klmnopqrst");
 });
 
-test("truncate removes what would close the comment or pose as a tag", () => {
-  assert.equal(truncate("a --> b"), "a -> b");
-  assert.equal(truncate("hive:end x"), "hive end x");
+test("truncate keeps punctuation as it is", () => {
+  assert.equal(truncate("a --> b"), "a --> b");
+  assert.equal(truncate("hive:end x"), "hive:end x");
 });
 
-test("a text hint joins all the message's text and keeps 20 characters", () => {
-  assert.equal(hint({ role: "user", content: "fix\n\nthe bug in lua/hive/ui.lua" }, none), "fix the bug in lua/hive/");
-  const reply: HintMessage = {
-    role: "assistant",
-    content: [
-      { type: "text", text: "Done." },
-      { type: "thinking" },
-      { type: "text", text: "Tests pass now." },
-    ],
-  };
-  assert.equal(hint(reply, none), "Done. Tests pass now.");
-});
-
-test("an assistant message with no text falls back to its tool calls, then its thinking", () => {
-  const calls = [{ type: "thinking" }, { type: "toolCall" }, { type: "toolCall" }];
-  assert.equal(hint({ role: "assistant", content: calls }, none), "2 tool calls");
-  assert.equal(hint({ role: "assistant", content: [{ type: "thinking" }] }, none), "thinking");
+test("a message that is not a tool result gets no hint", () => {
+  const user = (): undefined => undefined;
+  assert.equal(hint({ role: "user", content: "fix the bug" }, user), "");
+  assert.equal(hint({ role: "assistant", content: [{ type: "text", text: "Done." }] }, user), "");
 });
 
 test("read shows the path and the line range", () => {

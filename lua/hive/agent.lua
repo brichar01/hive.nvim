@@ -241,26 +241,22 @@ end
 function M.prompt(text)
   local ui = require("hive.ui")
   local _, path = ui.open()
-  ui.append("## You\n")
   ui.mark_start("user")
   ui.append(text)
-  ui.mark_end("user")
-  ui.append("\n## Agent\n")
   return send(text, path)
 end
 
----Send the current workbench's text after its last `<!-- hive:end <id> -->` as the prompt,
+---Send the current workbench's text after its last `End response to <id>` line as the prompt,
 ---and stream the reply after it.
 ---@return string|nil err
 function M.chat()
   local ui = require("hive.ui")
-  local text, first, last, path = ui.unanswered()
+  local text, first, _, path = ui.unanswered()
   if text == "" then
     return "nothing to send after the last reply"
   end
   ui.open()
   ui.mark_start("user", first)
-  ui.mark_end("user", last)
   return send(text, path)
 end
 
@@ -273,11 +269,9 @@ end
 
 ---@class Hive.Agent.Event
 ---@field type "message_start"|"message_end"|"text"|"end"
----@field text? string a tool result's call and output, on its message_start
 ---@field role? "user"|"assistant"|"toolResult"
----@field id? string session entry id
----@field hint? string what the message holds, on its message_end
----@field thinking? string the message's thinking on one line, on its message_end
+---@field header? string[] the lines the message's entry puts above its text
+---@field footer? string the line that ends the reply, naming the prompt it answered
 ---@field delta? string
 ---@field error? string
 
@@ -286,11 +280,8 @@ function M.on_event(event)
   local ui = require("hive.ui")
   if event.type == "message_start" then
     ui.mark_start(event.role)
-    if event.text and event.text ~= "" then
-      ui.append(event.text)
-    end
   elseif event.type == "message_end" then
-    ui.tag(event.role, event.id, event.hint, event.thinking)
+    ui.header(event.role, event.header or {})
   elseif event.type == "text" then
     ui.append(event.delta)
   elseif event.type == "end" then
@@ -298,7 +289,9 @@ function M.on_event(event)
       ui.append("\n**Error:** " .. event.error)
       require("hive.util").error("Hive prompt: " .. event.error)
     end
-    ui.append("\n")
+    if event.footer then
+      ui.append("\n" .. event.footer .. "\n")
+    end
   end
 end
 

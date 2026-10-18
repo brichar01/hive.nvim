@@ -1,7 +1,4 @@
-/** Hints for the workbench's entry tags, so each entry says what it holds. */
-
-/** Non-whitespace characters a text hint keeps. */
-export const TEXT_LIMIT = 20;
+/** Hints for the workbench's entry lines, so each entry says what it holds. */
 
 /** Non-whitespace characters a bash command keeps in its hint. */
 export const COMMAND_LIMIT = 40;
@@ -13,7 +10,6 @@ export interface HintMessage {
   toolCallId?: string;
   toolName?: string;
   isError?: boolean;
-  errorMessage?: string;
 }
 
 type Args = Record<string, unknown>;
@@ -35,8 +31,8 @@ const str = (value: unknown): string => (typeof value === "string" ? value : "")
 
 const plural = (count: number, one: string, many = `${one}s`): string => `${String(count)} ${count === 1 ? one : many}`;
 
-const textOf = (content: HintMessage["content"]): string =>
-  typeof content === "string"
+/** A message's text, without its thinking or tool calls. */
+export const textOf = (content: HintMessage["content"]): string =>  typeof content === "string"
     ? content
     : (content ?? []).flatMap((c) => (c.type === "text" && c.text ? [c.text] : [])).join("\n");
 
@@ -44,16 +40,11 @@ const textOf = (content: HintMessage["content"]): string =>
 const listed = (output: string): string[] => output.split("\n").filter((line) => line.trim() && !line.startsWith("["));
 
 /**
- * One line, safe inside the tag. With `limit`, it keeps that many non-whitespace characters.
- *
- * `--` would close the HTML comment, and `hive:` could pose as a tag.
+ * One line, with its whitespace collapsed. With `limit`, it keeps that many non-whitespace
+ * characters.
  */
 export function truncate(text: string, limit = Infinity): string {
-  const line = text
-    .replaceAll(/-{2,}/g, "-")
-    .replaceAll("hive:", "hive ")
-    .replaceAll(/\s+/g, " ")
-    .trim();
+  const line = text.replaceAll(/\s+/g, " ").trim();
   let count = 0;
   let end = 0;
   for (const char of line) {
@@ -126,35 +117,17 @@ export function toolHint(name: string, args: unknown, output: string, isError: b
   return head + (format.summary?.(output) ?? "");
 }
 
-/** What each role's hint shows. A text hint is all the message's text, cut to `TEXT_LIMIT`. */
-export const roleHints: Record<string, (message: HintMessage, argsOf: ArgsOf) => string> = {
-  user: (message) => truncate(textOf(message.content), TEXT_LIMIT),
-  assistant: (message) => {
-    const text = truncate(textOf(message.content), TEXT_LIMIT);
-    if (text) {
-      return text;
-    }
-    if (message.errorMessage) {
-      return "error";
-    }
-    const content = typeof message.content === "string" ? [] : (message.content ?? []);
-    const calls = content.filter((c) => c.type === "toolCall").length;
-    if (calls > 0) {
-      return plural(calls, "tool call");
-    }
-    return content.some((c) => c.type === "thinking") ? "thinking" : "";
-  },
-  toolResult: (message, argsOf) =>
+/** The hint for a tool result's line. Only tool results show what they hold, so others get none. */
+export function hint(message: HintMessage, argsOf: ArgsOf): string {
+  if (message.role !== "toolResult") {
+    return "";
+  }
+  return truncate(
     toolHint(
       message.toolName ?? "",
       message.toolCallId ? argsOf(message.toolCallId) : undefined,
       textOf(message.content),
       message.isError === true,
     ),
-};
-
-/** The hint for `message`, empty for a role with no entry in `roleHints`. */
-export function hint(message: HintMessage, argsOf: ArgsOf): string {
-  const format = roleHints[message.role];
-  return format ? truncate(format(message, argsOf)) : "";
+  );
 }
