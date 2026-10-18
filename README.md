@@ -227,7 +227,14 @@ agent session: `You (aaaaaaaa):` for a prompt, `Response (dddddddd):` for a repl
 and `Tool (cccccccc): grep "hive" lua/: 4 matches` for a tool result, which says
 what the call acted on and what it found. The hash is the first eight characters
 of the entry id. A message's thinking shows as one line above its reply,
-`Thinking (bbbbbbbb): check the fold logic`.
+`Thinking (bbbbbbbb): Checking the fold logic and its guard`.
+
+That line is a summary, written by a small model that runs beside the agent
+(node-llama-cpp, a 0.5B instruct model). The first summary downloads it, about
+380MB, and loads it; until it answers, and whenever a summary takes more than a
+few seconds, the line shows the start of the thinking instead, so a missing or
+slow model never holds a reply up. `HIVE_MODEL_DIR` says where models are kept,
+and defaults to node-llama-cpp's own `~/.node-llama-cpp/models`.
 
 The raw thinking and every tool call go to `<workbench>.log` beside the workbench
 instead: one JSON object per line, with the entry id, a timestamp and a type of

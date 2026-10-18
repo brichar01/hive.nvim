@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^1.1.0",
-    "neovim": "^5.5.0"
+    "neovim": "^5.5.0",
+    "node-llama-cpp": "^3.22.2"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

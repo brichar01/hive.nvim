@@ -19,6 +19,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { diagnosticsExtension } from "./diagnostics.ts";
 import { type ArgsOf, hint, type HintMessage, textOf } from "./hint.ts";
+import { createSummarizer, type Summarizer } from "./summary.ts";
 import { createLogger } from "./log.ts";
 import { createNvimOperations } from "./nvim_ops.ts";
 import type { NvimConnection } from "./nvim_wrapper.ts";
@@ -294,7 +295,11 @@ export function endLine(prompt: string): string {
 }
 
 export interface Router {
-  (event: SessionEvent): void;
+  /**
+   * Send `event` on its way. Neovim is sent everything but a summary before this returns; an
+   * assistant message's header waits for its summary, so await this to keep events in order.
+   */
+  (event: SessionEvent): Promise<void>;
   /** Send whatever the chunker holds now. */
   flush: () => void;
   /** Resolve once every log write queued so far has finished. */
@@ -305,11 +310,13 @@ export interface Router {
  * Split a session's events by where they go: streamed text, message boundaries and the end go to
  * Neovim, while raw thinking and tool calls go to `log`, keyed by the entry of the message they
  * belong to. Neovim sees each message as a header line and its text, with a message's thinking as
- * one summary line above it and a tool result's header saying what the call found.
+ * one summary line above it and a tool result's header saying what the call found. With
+ * `summarize`, that line is the summary of the thinking rather than the start of it.
  */
 export function createRouter(
   send: (event: ForwardedEvent) => void,
   log: WorkbenchLog,
+  summarize?: (thinking: string) => Promise<string>,
 ): Router {
   const chunker = createChunker();
   /** The thinking of the message coming through, until its end. */
@@ -325,7 +332,61 @@ export function createRouter(
     }
   };
 
-  const router = (event: SessionEvent): void => {
+  /**
+   * Send a message's header, at the boundary that ends it. Everything but an assistant message's
+   * thinking line is ready at once; the thinking line waits for its summary, if there is one.
+   */
+  const endMessage = (
+    event: Extract<SessionEvent, { type: "message_end" }>,
+  ): void | Promise<void> => {
+    const header: string[] = [];
+
+    /** The rest of the header, once the thinking line above it is settled. */
+    const finish = (): void => {
+      // A message with no text of its own, such as one that only calls a tool, gets no line.
+      if (event.role !== "assistant" || event.text) {
+        const found = event.role === "toolResult" ? event.hint : "";
+        header.push(entryLine(event.role, event.id, found));
+      }
+      // A blank line keeps each message's block apart from the one before it.
+      sendAll(
+        chunker({
+          type: "message_end",
+          role: event.role,
+          header: header.length === 0 ? [] : ["", ...header],
+        }),
+      );
+    };
+
+    if (event.role === "user") {
+      prompt = event.id;
+    }
+    let text = "";
+    if (event.role === "assistant") {
+      entry = event.id;
+      text = thinking;
+      thinking = "";
+    }
+    if (text === "") {
+      finish();
+      return;
+    }
+
+    void log.write({ type: "thinking", id: event.id, text });
+    if (summarize === undefined) {
+      header.push(thinkingLine(event.id, preview(text)));
+      finish();
+      return;
+    }
+    // The summary takes the preview's place, so the header waits for it, and an empty or slow
+    // summary leaves the preview where it is.
+    return summarize(text).then((summary) => {
+      header.push(thinkingLine(event.id, summary || preview(text)));
+      finish();
+    });
+  };
+
+  const handle = (event: SessionEvent): void | Promise<void> => {
     switch (event.type) {
       case "thinking":
         thinking += event.delta;
@@ -346,34 +407,8 @@ export function createRouter(
       case "message_start":
         sendAll(chunker(event));
         return;
-      case "message_end": {
-        const header: string[] = [];
-        if (event.role === "assistant") {
-          entry = event.id;
-          const text = thinking;
-          thinking = "";
-          if (text !== "") {
-            void log.write({ type: "thinking", id: event.id, text });
-            header.push(thinkingLine(event.id, preview(text)));
-          }
-        } else if (event.role === "user") {
-          prompt = event.id;
-        }
-        // A message with no text of its own, such as one that only calls a tool, gets no line.
-        if (event.role !== "assistant" || event.text) {
-          const found = event.role === "toolResult" ? event.hint : "";
-          header.push(entryLine(event.role, event.id, found));
-        }
-        // A blank line keeps each message's block apart from the one before it.
-        sendAll(
-          chunker({
-            type: "message_end",
-            role: event.role,
-            header: header.length === 0 ? [] : ["", ...header],
-          }),
-        );
-        return;
-      }
+      case "message_end":
+        return endMessage(event);
       case "end": {
         const ended: ForwardedEvent =
           prompt === undefined ? event : { ...event, footer: endLine(prompt) };
@@ -382,6 +417,8 @@ export function createRouter(
       }
     }
   };
+  const router = (event: SessionEvent): Promise<void> =>
+    Promise.resolve(handle(event));
   router.flush = (): void => {
     sendAll(chunker.flush());
   };
@@ -396,6 +433,8 @@ export interface SessionOptions {
   settings?: Parameters<typeof SettingsManager.inMemory>[0];
   /** Replaces the catalogue's `https://api.deepseek.com`, for a stub server. */
   baseUrl?: string;
+  /** What a message's thinking line summarises it with. Defaults to `createSummarizer`. */
+  summarizer?: Summarizer;
 }
 
 export interface Sessions {
@@ -670,6 +709,8 @@ export function createSessions(
     flush: () => void;
   }
   const clients = new WeakMap<NvimConnection, Map<string, Workbench>>();
+  // One model for every workbench: loading it is the expensive part of a summary.
+  const summarizer = options.summarizer ?? createSummarizer();
 
   const send = (nvim: NvimConnection, event: ForwardedEvent): void => {
     nvim
@@ -727,19 +768,21 @@ export function createSessions(
         )
         .at(-1);
 
-    // Each event is forwarded a microtask after its listener, in order, so a message_end sees its saved entry.
+    // Each event is forwarded a microtask after its listener, in order, so a message_end sees its
+    // saved entry. Awaiting the router keeps that order across a header that waits for a summary.
     let queue = Promise.resolve();
     const router = createRouter(
       (event) => {
         send(nvim, event);
       },
       createWorkbenchLog(request.log),
+      summarizer.summarize,
     );
     session.subscribe((event) => {
-      queue = queue.then(() => {
+      queue = queue.then(async () => {
         const forwarded = forward(event, idOf, argsOf);
         if (forwarded) {
-          router(forwarded);
+          await router(forwarded);
         }
       });
     });
