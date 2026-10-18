@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -7,19 +7,26 @@ import { join } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import type { NvimConnection } from "../src/nvim_wrapper.ts";
 import {
+  callLine,
   createChunker,
+  createRouter,
   createSessions,
   DEFAULT_TOOLS,
   type ForwardedEvent,
   forward,
   KEY_ENV,
   type PromptRequest,
+  preview,
   resolveTools,
+  type Router,
   type SessionOptions,
   takeApiKey,
+  THINKING_PREVIEW_CHARS,
+  thinkingLine,
   toolMatches,
   TOOLS,
 } from "../src/session.ts";
+import type { LoggedEntry } from "../src/workbench_log.ts";
 
 const sandbox = mkdtempSync(join(tmpdir(), "hive-session-"));
 // The embedded session discovers extensions from `<agentDir>/extensions`. Stub the tool the
@@ -47,12 +54,31 @@ Reflect.deleteProperty(process.env, "DEEPSEEK_API_KEY");
 
 // ------- Stub DeepSeek server -------
 
+interface StubMessage {
+  role: string;
+  content?: string | { type: string; text?: string }[];
+}
+
 interface StubBody {
   model?: string;
   reasoning_effort?: string;
-  messages?: { role: string }[];
+  messages?: StubMessage[];
   tools?: { function: { name: string } }[];
 }
+
+/** A message's text, whether the request carries it as a string or as content parts. */
+const textOf = (message: StubMessage): string => {
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+  return (message.content ?? []).flatMap((part) => part.text ?? []).join("\n");
+};
+
+/** Whether this request asks for a reasoning stream, which the stub sends before its text. */
+const wantsThinking = (body: StubBody): boolean =>
+  body.messages?.some(
+    (message) => message.role === "user" && textOf(message).includes("think"),
+  ) ?? false;
 
 let requests: {
   url: string | undefined;
@@ -67,12 +93,23 @@ const server = createServer((req, res) => {
   const chunks: Buffer[] = [];
   req.on("data", (data: Buffer) => chunks.push(data));
   req.on("end", () => {
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as StubBody;
     requests.push({
       url: req.url,
       headers: req.headers,
-      body: JSON.parse(Buffer.concat(chunks).toString("utf-8")) as StubBody,
+      body,
     });
     res.writeHead(200, { "Content-Type": "text/event-stream" });
+    if (wantsThinking(body)) {
+      for (const reasoning of ["check the ", "fold logic"]) {
+        res.write(
+          chunk({
+            id: "1",
+            choices: [{ index: 0, delta: { role: "assistant", reasoning_content: reasoning } }],
+          }),
+        );
+      }
+    }
     for (const content of ["Hel", "lo"]) {
       res.write(
         chunk({
@@ -112,8 +149,10 @@ function fakeNvim(): { nvim: NvimConnection; events: ForwardedEvent[] } {
   const events: ForwardedEvent[] = [];
   const nvim: NvimConnection = {
     on: () => {},
-    exec: (_code, args = []) => {
-      events.push(args[0] as ForwardedEvent);
+    exec: (code, args = []) => {
+      if (code.includes("on_event")) {
+        events.push(args[0] as ForwardedEvent);
+      }
       return Promise.resolve(0);
     },
   };
@@ -127,6 +166,7 @@ const request = (text: string): PromptRequest => ({
   workbench: "project-20261004000000",
   cwd: sandbox,
   tools: ["read", "write", "edit", "bash", "grep", "find", "ls"],
+  log: join(sandbox, "project-20261004000000.log"),
 });
 
 const options = (extra: SessionOptions = {}): SessionOptions => ({
@@ -204,7 +244,6 @@ test("a prompt streams text deltas and ends", async () => {
   assert.deepEqual(events, [
     { type: "message_end", role: "user", id: ids[0], hint: "hello" },
     { type: "message_start", role: "assistant" },
-    { type: "text_start" },
     { type: "text", delta: "Hello" },
     { type: "message_end", role: "assistant", id: ids[1], hint: "Hello" },
     { type: "end" },
@@ -368,55 +407,205 @@ test("each workbench keeps its own session", async () => {
   );
 });
 
-test("the chunker batches thinking into a few lines and flushes at its end", () => {
-  const chunk = createChunker();
+test("a prompt writes raw thinking to the workbench log", async () => {
+  const { nvim, events } = fakeNvim();
+  const log = join(sandbox, "project-thinking.log");
+  await createSessions("k", options()).prompt(nvim, {
+    ...request("think it through"),
+    model: "deepseek-v4-pro",
+    thinking: "high",
+    workbench: "project-thinking",
+    log,
+  });
 
-  assert.deepEqual(chunk({ type: "thinking_start" }), [
-    { type: "thinking_start" },
-  ]);
-  assert.deepEqual(chunk({ type: "thinking", delta: "one\ntwo\n" }), []);
-  assert.deepEqual(chunk({ type: "thinking", delta: "three\n" }), [
-    { type: "thinking", delta: "one\ntwo\nthree\n" },
-  ]);
-  assert.deepEqual(chunk({ type: "thinking", delta: "tail" }), []);
-  assert.deepEqual(chunk({ type: "thinking_end" }), [
-    { type: "thinking", delta: "tail" },
-    { type: "thinking_end" },
+  const end = events.find(
+    (event) => event.type === "message_end" && event.role === "assistant",
+  );
+  assert.ok(end?.type === "message_end");
+  assert.equal(end.thinking, `Thinking (${end.id.slice(0, 8)}): check the fold logic`);
+
+  const lines = readFileSync(log, "utf-8").trim().split("\n");
+  assert.equal(lines.length, 1);
+  const { ts, ...entry } = JSON.parse(lines[0] ?? "{}") as Record<string, unknown>;
+  assert.equal(typeof ts, "string");
+  assert.deepEqual(entry, {
+    id: end.id,
+    type: "thinking",
+    text: "check the fold logic",
+  });
+});
+
+test("the chunker coalesces text deltas until an event flushes them", () => {
+  const chunk = createChunker();
+  const end = { type: "end" } as const;
+
+  assert.deepEqual(chunk({ type: "text", delta: "Hel" }), []);
+  assert.deepEqual(chunk({ type: "text", delta: "lo" }), []);
+  assert.deepEqual(chunk(end), [{ type: "text", delta: "Hello" }, end]);
+  assert.deepEqual(chunk.flush(), []);
+});
+
+test("the chunker holds text past many lines, and flushes on size", () => {
+  const chunk = createChunker();
+  const lines = "x\n".repeat(1000);
+
+  assert.deepEqual(chunk({ type: "text", delta: lines }), []);
+  assert.deepEqual(chunk({ type: "text", delta: "y".repeat(100_000) }), [
+    { type: "text", delta: lines + "y".repeat(100_000) },
   ]);
 });
 
-test("the chunker flushes a long line and passes boundaries through", () => {
-  const chunk = createChunker();
+function fakeRouter(): {
+  events: ForwardedEvent[];
+  logged: LoggedEntry[];
+  router: Router;
+} {
+  const events: ForwardedEvent[] = [];
+  const logged: LoggedEntry[] = [];
+  const router = createRouter(
+    (event) => {
+      events.push(event);
+    },
+    {
+      write: (entry) => {
+        logged.push(entry);
+        return Promise.resolve();
+      },
+      drained: () => Promise.resolve(),
+    },
+  );
+  return { events, logged, router };
+}
 
-  assert.deepEqual(chunk({ type: "text_start" }), [{ type: "text_start" }]);
-  assert.deepEqual(chunk({ type: "text", delta: "x".repeat(512) }), [
-    { type: "text", delta: "x".repeat(512) },
+test("preview collapses whitespace and keeps the first characters", () => {
+  assert.equal(preview("  check \n the\tfold logic and more "), "check the fold logic");
+  assert.equal(preview("x".repeat(THINKING_PREVIEW_CHARS + 5)), "x".repeat(THINKING_PREVIEW_CHARS));
+  assert.equal(preview(" \n\t "), "");
+});
+
+test("thinkingLine keys the summary by the start of the entry id", () => {
+  assert.equal(thinkingLine("763328b4-rest", "check the fold logic"), "Thinking (763328b4): check the fold logic");
+  assert.equal(thinkingLine("short", "hmm"), "Thinking (short): hmm");
+});
+
+test("callLine shows the tool's name and arguments", () => {
+  assert.equal(callLine("read", { path: "a.lua" }), '`read {"path":"a.lua"}`');
+  assert.equal(callLine("ls", undefined), "`ls null`");
+});
+
+test("the router logs raw thinking and shows it as one line", () => {
+  const { events, logged, router } = fakeRouter();
+
+  router({ type: "message_start", role: "assistant" });
+  router({ type: "thinking", delta: "check the " });
+  router({ type: "thinking", delta: "fold logic" });
+  router({ type: "text", delta: "Hello" });
+  router({ type: "message_end", role: "assistant", id: "763328b4", hint: "Hello" });
+
+  assert.deepEqual(events, [
+    { type: "message_start", role: "assistant" },
+    { type: "text", delta: "Hello" },
+    {
+      type: "message_end",
+      role: "assistant",
+      id: "763328b4",
+      hint: "Hello",
+      thinking: "Thinking (763328b4): check the fold logic",
+    },
   ]);
-  assert.deepEqual(chunk({ type: "text", delta: "reply" }), []);
-  assert.deepEqual(chunk({ type: "tool_start", call: "c1", name: "read", args: {} }), [
-    { type: "text", delta: "reply" },
-    { type: "tool_start", call: "c1", name: "read", args: {} },
+  assert.deepEqual(logged, [
+    { type: "thinking", id: "763328b4", text: "check the fold logic" },
   ]);
 });
 
-test("forward passes thinking through, and a tool result's text with its start", () => {
+test("the router moves a call's line into its result, and logs the call", () => {
+  const { events, logged, router } = fakeRouter();
+
+  router({ type: "message_end", role: "assistant", id: "763328b4", hint: "read" });
+  router({ type: "tool_start", call: "c1", name: "read", args: { path: "a.lua" } });
+  router({ type: "message_start", role: "toolResult", text: "line", call: "c1" });
+  router({ type: "message_end", role: "toolResult", id: "ab12cd34", hint: "read a.lua" });
+
+  assert.deepEqual(events, [
+    { type: "message_end", role: "assistant", id: "763328b4", hint: "read" },
+    {
+      type: "message_start",
+      role: "toolResult",
+      text: '`read {"path":"a.lua"}`\nline',
+    },
+    { type: "message_end", role: "toolResult", id: "ab12cd34", hint: "read a.lua" },
+  ]);
+  assert.deepEqual(logged, [
+    { type: "tool_call", id: "763328b4", name: "read", args: { path: "a.lua" } },
+  ]);
+});
+
+test("the router carries every call in a batch into its own result", () => {
+  const { events, logged, router } = fakeRouter();
+
+  router({ type: "message_end", role: "assistant", id: "763328b4", hint: "two calls" });
+  router({ type: "tool_start", call: "c1", name: "read", args: { path: "a.lua" } });
+  router({ type: "tool_start", call: "c2", name: "bash", args: { command: "true" } });
+  router({ type: "message_start", role: "toolResult", text: "one", call: "c1" });
+  router({ type: "message_end", role: "toolResult", id: "t1", hint: "read a.lua" });
+  router({ type: "message_start", role: "toolResult", text: "two", call: "c2" });
+  router({ type: "message_end", role: "toolResult", id: "t2", hint: "bash true" });
+
+  assert.deepEqual(
+    events.flatMap((event) => (event.type === "message_start" ? [event.text] : [])),
+    ['`read {"path":"a.lua"}`\none', '`bash {"command":"true"}`\ntwo'],
+  );
+  assert.deepEqual(logged, [
+    { type: "tool_call", id: "763328b4", name: "read", args: { path: "a.lua" } },
+    { type: "tool_call", id: "763328b4", name: "bash", args: { command: "true" } },
+  ]);
+});
+
+test("the router keeps each assistant message's thinking apart", () => {
+  const { events, logged, router } = fakeRouter();
+
+  router({ type: "message_start", role: "assistant" });
+  router({ type: "thinking", delta: "first" });
+  router({ type: "message_end", role: "assistant", id: "aaaaaaaa", hint: "one" });
+  router({ type: "message_start", role: "assistant" });
+  router({ type: "thinking", delta: "second" });
+  router({ type: "message_end", role: "assistant", id: "bbbbbbbb", hint: "two" });
+
+  assert.deepEqual(
+    events.flatMap((event) =>
+      event.type === "message_end" ? [event.thinking] : []
+    ),
+    ["Thinking (aaaaaaaa): first", "Thinking (bbbbbbbb): second"],
+  );
+  assert.deepEqual(logged, [
+    { type: "thinking", id: "aaaaaaaa", text: "first" },
+    { type: "thinking", id: "bbbbbbbb", text: "second" },
+  ]);
+});
+
+test("the router flushes buffered text on demand", () => {
+  const { events, router } = fakeRouter();
+
+  router({ type: "text", delta: "tail" });
+  assert.deepEqual(events, []);
+  router.flush();
+  assert.deepEqual(events, [{ type: "text", delta: "tail" }]);
+});
+
+test("forward passes thinking and text through, and a tool result's text with its call", () => {
   const none = (): undefined => undefined;
   const update = (assistantMessageEvent: object) =>
     ({ type: "message_update", message: {}, assistantMessageEvent }) as never;
 
-  assert.deepEqual(forward(update({ type: "thinking_start" }), none), {
-    type: "thinking_start",
+  assert.deepEqual(forward(update({ type: "thinking_delta", delta: "hmm" }), none), {
+    type: "thinking",
+    delta: "hmm",
   });
-  assert.deepEqual(forward(update({ type: "text_start" }), none), {
-    type: "text_start",
+  assert.deepEqual(forward(update({ type: "text_delta", delta: "hi" }), none), {
+    type: "text",
+    delta: "hi",
   });
-  assert.deepEqual(
-    forward(update({ type: "thinking_delta", delta: "hmm" }), none),
-    { type: "thinking", delta: "hmm" },
-  );
-  assert.deepEqual(forward(update({ type: "thinking_end" }), none), {
-    type: "thinking_end",
-  });
+  assert.equal(forward(update({ type: "text_start" }), none), undefined);
   assert.deepEqual(
     forward(
       {

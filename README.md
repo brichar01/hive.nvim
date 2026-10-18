@@ -223,13 +223,17 @@ The conversation goes into the project's newest workbench, the same one
 workbench for you.
 
 Each message in the workbench sits between `<!-- hive:entry <id> <hint> -->` and
-`<!-- hive:end <id> -->`. The id is the message's entry in the agent session. The
-hint says what the message holds, so a closed fold shows it. For a prompt or a reply
-it is the first 20 characters of its text. For a tool it is what the call acted on
-and what it found, such as `read lua/hive/ui.lua:20-60`, `grep "set_folds" lua/: 4 matches`
-or `bash npm test (exit 1)`. The workbench window folds on these tags. Each tool
-call is in the same fold as its result. Tool results, and agent messages with only
-thinking or a tool call, start closed. To chat in the workbench itself, write below the last `hive:end` tag and run
+`<!-- hive:end <id> -->`. The id is the message's entry in the agent session, and the
+hint says what the message holds. For a prompt or a reply it is the first 20
+characters of its text. For a tool it is what the call acted on and what it found,
+such as `read lua/hive/ui.lua:20-60`, `grep "hive" lua/: 4 matches` or
+`bash npm test (exit 1)`, and the call itself is the first line of its result.
+
+A message's thinking shows as one line under its entry tag,
+`Thinking (763328b4): check the fold logic`, where the hash is the entry id. The
+raw thinking, and every tool call, goes to `<workbench>.log` beside the workbench
+instead: one JSON object per line, with the entry id, a timestamp and a type of
+either `thinking` or `tool_call`. To chat in the workbench itself, write below the last `hive:end` tag and run
 `:Hive chat`. It sends that text as the prompt and appends the reply below it.
 
 To change the model, thinking level or tools until Neovim exits, use `:Hive set`. A

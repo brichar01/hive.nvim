@@ -10,42 +10,12 @@ local buf = nil
 ---@class Hive.Ui.Pending
 ---@field start integer extmark on the message's first line
 ---@field finish? integer extmark on the message's last line, for a message written before it was sent
----@field text boolean whether reply text has been appended
 
 ---Messages waiting for their entry id, by role.
 ---@type table<string, Hive.Ui.Pending>
 local pending = {}
 
----@class Hive.Ui.Call
----@field mark integer extmark on the call's line
----@field line string
-
----Running tool calls, by tool call id. Each line moves into its result's fold.
----@type table<string, Hive.Ui.Call>
-local calls = {}
-
----Whether a thinking block is open, so its end marker lands before the reply.
-local thinking_open = false
-
 local END_TAG = "^<!%-%- hive:end (%S+) %-%->$"
-
-local FOLDMARKER = "hive:entry,hive:end"
-
----Fold each message between its entry and end tags, all open to start with.
----@param win integer
-function M.set_folds(win)
-  local wo = vim.wo[win][0]
-  wo.foldmethod = "marker"
-  wo.foldmarker = FOLDMARKER
-  wo.foldlevel = 99
-end
-
----@param win integer
----@return boolean folded true when `win` already folds the messages
-local function has_folds(win)
-  local wo = vim.wo[win][0]
-  return wo.foldmethod == "marker" and wo.foldmarker == FOLDMARKER
-end
 
 ---@param path string
 ---@return integer buf
@@ -55,23 +25,6 @@ local function load(path)
   vim.bo[b].buflisted = true
   vim.bo[b].swapfile = false
   vim.bo[b].filetype = "markdown"
-
-  if not vim.b[b].hive_folds then
-    vim.b[b].hive_folds = true
-    vim.api.nvim_create_autocmd("BufWinEnter", {
-      group = require("hive.config").augroup,
-      buffer = b,
-      callback = function()
-        M.set_folds(vim.api.nvim_get_current_win())
-      end,
-    })
-    -- A window the workbench actions opened keeps its folds closed.
-    for _, win in ipairs(vim.fn.win_findbuf(b)) do
-      if not has_folds(win) then
-        M.set_folds(win)
-      end
-    end
-  end
   return b
 end
 
@@ -83,8 +36,6 @@ function M.open()
   local path = require("hive.workbench").current()
   buf = load(path)
   pending = {}
-  calls = {}
-  thinking_open = false
 
   if vim.fn.bufwinid(buf) == -1 then
     vim.cmd("vsplit")
@@ -127,34 +78,6 @@ local function last_line()
   return row, vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
 end
 
----Append `text` on a line of its own, starting a new line when the last one has text.
----@param text string
-function M.append_line(text)
-  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
-    M.open()
-  end
-  local _, tail = last_line()
-  M.append((tail == "" and "" or "\n") .. text .. "\n")
-end
-
----Open a thinking block, marked so the reply that follows does not merge with it.
-function M.start_thinking()
-  if thinking_open then
-    return
-  end
-  M.append_line("<!-- hive:thinking:start -->")
-  thinking_open = true
-end
-
----Close the open thinking block, at the reply's start or the thinking's own end.
-function M.end_thinking()
-  if not thinking_open then
-    return
-  end
-  M.append_line("<!-- hive:thinking:end -->")
-  thinking_open = false
-end
-
 ---Mark where the message for `role` starts. Without `row`, it starts on a new line at the end.
 ---@param role string
 ---@param row? integer 0-based row the message's text starts on
@@ -163,10 +86,6 @@ function M.mark_start(role, row)
     M.open()
   end
   ---@cast buf integer
-
-  if role == "assistant" then
-    thinking_open = false
-  end
 
   if not row then
     local tail
@@ -177,7 +96,7 @@ function M.mark_start(role, row)
     end
   end
   local start = vim.api.nvim_buf_set_extmark(buf, require("hive.config").ns, row, 0, { right_gravity = false })
-  pending[role] = { start = start, text = false }
+  pending[role] = { start = start }
 end
 
 ---Mark the last line of the `role` message, for one written before it was sent. Without one,
@@ -190,15 +109,6 @@ function M.mark_end(role, row)
     return
   end
   p.finish = vim.api.nvim_buf_set_extmark(buf, require("hive.config").ns, row or last_line(), 0, {})
-end
-
----Append reply text to the assistant message. Any non-blank text keeps its fold open.
----@param text string
-function M.append_reply(text)
-  if pending.assistant and text:find("%S") then
-    pending.assistant.text = true
-  end
-  M.append(text)
 end
 
 ---@param mark integer|nil
@@ -214,47 +124,14 @@ local function take(mark)
   return row
 end
 
----Show a tool call on its own line while it runs.
----@param id string tool call id
----@param line string
-function M.add_call(id, line)
-  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
-    M.open()
-  end
-  ---@cast buf integer
-
-  local _, tail = last_line()
-  M.append((tail == "" and "" or "\n") .. line .. "\n")
-  local row = last_line() - 1
-  calls[id] = { mark = vim.api.nvim_buf_set_extmark(buf, require("hive.config").ns, row, 0, {}), line = line }
-end
-
----Remove a tool call's line, for its result to write again inside its own fold.
----
---- Results arrive after every call in the batch has started, so a call's line
---- would otherwise sit outside its result's fold.
----@param id string tool call id
----@return string|nil line nil for a call not shown with `add_call`
-function M.take_call(id)
-  local call = calls[id]
-  calls[id] = nil
-  if not (call and buf and vim.api.nvim_buf_is_valid(buf)) then
-    return nil
-  end
-  local row = take(call.mark)
-  if row then
-    vim.api.nvim_buf_set_lines(buf, row, row + 1, false, {})
-  end
-  return call.line
-end
-
 ---Wrap the `role` message in `<!-- hive:entry <id> <hint> -->` and `<!-- hive:end <id> -->`.
----The hint is the text a closed fold shows. A tool result, or an assistant message with no
----reply text, starts as a closed fold.
+---The hint says what the message holds. A `thinking` line goes under the entry tag, keyed by
+---the same id the workbench's log holds the raw text under.
 ---@param role string
 ---@param id string session entry id
 ---@param hint? string what the message holds
-function M.tag(role, id, hint)
+---@param thinking? string the message's thinking, on one line
+function M.tag(role, id, hint, thinking)
   if not (buf and vim.api.nvim_buf_is_valid(buf)) then
     return
   end
@@ -276,15 +153,11 @@ function M.tag(role, id, hint)
     return
   end
   local entry = hint and hint ~= "" and ("%s %s"):format(id, hint) or id
-  vim.api.nvim_buf_set_lines(buf, start, start, false, { ("<!-- hive:entry %s -->"):format(entry) })
-
-  -- Set either way: after one fold is closed by hand, Neovim creates new folds closed.
-  local closed = role == "toolResult" or (role == "assistant" and p and not p.text)
-  for _, win in ipairs(vim.fn.win_findbuf(buf)) do
-    vim.api.nvim_win_call(win, function()
-      vim.cmd(("silent! %d%s"):format(start + 1, closed and "foldclose" or "foldopen"))
-    end)
+  local header = { ("<!-- hive:entry %s -->"):format(entry) }
+  if thinking then
+    header[#header + 1] = thinking
   end
+  vim.api.nvim_buf_set_lines(buf, start, start, false, header)
 end
 
 ---The current workbench's text after its last `<!-- hive:end <id> -->`, or all of it without one.

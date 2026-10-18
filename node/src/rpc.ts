@@ -10,7 +10,7 @@ import {
 
 export type Handler = (nvim: NvimConnection, args: unknown[]) => Promise<void>;
 
-/** Read the `{text, model, thinking, workbench, cwd, tools}` table Lua sends with `prompt`. */
+/** Read the `{text, model, thinking, workbench, cwd, tools, log}` table Lua sends with `prompt`. */
 export function parsePromptRequest(arg: unknown): PromptRequest {
   const fields = (typeof arg === "object" && arg !== null ? arg : {}) as Record<
     string,
@@ -35,6 +35,7 @@ export function parsePromptRequest(arg: unknown): PromptRequest {
     thinking,
     workbench: field("workbench"),
     cwd: field("cwd"),
+    log: field("log"),
   };
   const { tools } = fields;
   if (!Array.isArray(tools) || !tools.every((tool) => typeof tool === "string")) {

@@ -22,6 +22,7 @@ import { type ArgsOf, hint, type HintMessage } from "./hint.ts";
 import { createLogger } from "./log.ts";
 import { createNvimOperations } from "./nvim_ops.ts";
 import type { NvimConnection } from "./nvim_wrapper.ts";
+import { createWorkbenchLog, type WorkbenchLog } from "./workbench_log.ts";
 
 const log = createLogger("session");
 
@@ -176,75 +177,197 @@ export interface PromptRequest {
   cwd: string;
   /** The active tools, resolved from `TOOLS` by exact name, `*` pattern, or `+`/`-` delta. */
   tools: string[];
+  /** The workbench's log file, where its raw thinking and tool calls go. */
+  log: string;
 }
 
-/** The subset of Pi's events that Neovim renders. */
 /** Messages that get an entry tag in the workbench. */
 export type TaggedRole = "user" | "assistant" | "toolResult";
 
-export type ForwardedEvent =
+/** What a session's events become before routing: what Neovim needs, and what it does not. */
+export type SessionEvent =
   /** `text` is a tool result's output, which arrives whole. `call` is its tool call's id. */
   | { type: "message_start"; role: TaggedRole; text?: string; call?: string }
   /** `hint` says what the message holds, for its entry tag. */
   | { type: "message_end"; role: TaggedRole; id: string; hint: string }
-  | { type: "text_start" }
   | { type: "text"; delta: string }
-  | { type: "thinking_start" }
+  /** Raw thinking, which goes to the workbench's log instead of into its buffer. */
   | { type: "thinking"; delta: string }
-  | { type: "thinking_end" }
   | { type: "tool_start"; call: string; name: string; args: unknown }
-  | { type: "tool_end"; name: string; isError: boolean }
   | { type: "end"; error?: string };
 
-/** How much streamed text Neovim waits for before it sees a chunk. */
-const STREAM_CHUNK_LINES = 3;
-const STREAM_CHUNK_CHARS = 512;
+/** What Neovim is sent. */
+export type ForwardedEvent =
+  | { type: "message_start"; role: TaggedRole; text?: string }
+  /** `thinking` is the message's thinking on one line, under its entry tag. */
+  | {
+      type: "message_end";
+      role: TaggedRole;
+      id: string;
+      hint: string;
+      thinking?: string;
+    }
+  | { type: "text"; delta: string }
+  | { type: "end"; error?: string };
 
-type StreamKind = "thinking" | "text";
+/**
+ * How much streamed text Neovim waits for before it sees a chunk. Both limits sit far above a
+ * message, so in practice the next event flushes the buffer rather than its size.
+ */
+const STREAM_CHUNK_LINES = 2000;
+const STREAM_CHUNK_CHARS = 100_000;
 
 export interface Chunker {
   (event: ForwardedEvent): ForwardedEvent[];
-  /** Send whatever is buffered now, in stream order. */
+  /** Send whatever is buffered now. */
   flush: () => ForwardedEvent[];
 }
 
 /**
- * Coalesce streamed deltas into chunks of a few lines, so Neovim makes one RPC and one buffer
- * update per chunk instead of one per token. Every other event flushes what is buffered and
- * passes through in order, so the start and end events keep their current timing.
+ * Coalesce streamed text into chunks, so Neovim makes one RPC and one buffer update per chunk
+ * instead of one per token. Every other event flushes what is buffered and passes through in
+ * order, so a message's text reaches the buffer before the message's own event does.
  */
 export function createChunker(): Chunker {
-  const buffers: Record<StreamKind, string> = { thinking: "", text: "" };
-
-  const flush = (kind: StreamKind): ForwardedEvent[] => {
-    const delta = buffers[kind];
+  let buffered = "";
+  const flush = (): ForwardedEvent[] => {
+    const delta = buffered;
     if (delta === "") {
       return [];
     }
-    buffers[kind] = "";
-    return [{ type: kind, delta }];
-  };
-  const flushAll = (): ForwardedEvent[] => [
-    ...flush("thinking"),
-    ...flush("text"),
-  ];
-  const ready = (kind: StreamKind): boolean => {
-    const buffered = buffers[kind];
-    return (
-      buffered.length >= STREAM_CHUNK_CHARS ||
-      (buffered.match(/\n/g)?.length ?? 0) >= STREAM_CHUNK_LINES
-    );
+    buffered = "";
+    return [{ type: "text", delta }];
   };
 
   const chunk = (event: ForwardedEvent): ForwardedEvent[] => {
-    if (event.type === "text" || event.type === "thinking") {
-      buffers[event.type] += event.delta;
-      return ready(event.type) ? flush(event.type) : [];
+    if (event.type === "text") {
+      buffered += event.delta;
+      const lines = buffered.match(/\n/g)?.length ?? 0;
+      const reached =
+        buffered.length >= STREAM_CHUNK_CHARS || lines >= STREAM_CHUNK_LINES;
+      return reached ? flush() : [];
     }
-    return [...flushAll(), event];
+    return [...flush(), event];
   };
-  chunk.flush = flushAll;
+  chunk.flush = flush;
   return chunk;
+}
+
+/** How much of a thinking block Neovim shows, until a summary of it replaces it. */
+export const THINKING_PREVIEW_CHARS = 20;
+
+/** How Neovim shows a message's thinking, keyed by the entry the log holds it under. */
+export function thinkingLine(id: string, summary: string): string {
+  return `Thinking (${id.slice(0, 8)}): ${summary}`;
+}
+
+/** The first `THINKING_PREVIEW_CHARS` characters of `text`, on one line. */
+export function preview(text: string): string {
+  return text.replace(/\s+/g, " ").trim().slice(0, THINKING_PREVIEW_CHARS);
+}
+
+/** How Neovim shows a tool call: its name and its arguments. */
+export function callLine(name: string, args: unknown): string {
+  return "`" + name + " " + JSON.stringify(args ?? null) + "`";
+}
+
+export interface Router {
+  (event: SessionEvent): void;
+  /** Send whatever the chunker holds now. */
+  flush: () => void;
+  /** Resolve once every log write queued so far has finished. */
+  drained: () => Promise<void>;
+}
+
+/**
+ * Split a session's events by where they go: streamed text, message boundaries and the end go to
+ * Neovim, while raw thinking and tool calls go to `log`, keyed by the entry of the message they
+ * belong to. Neovim sees a message's thinking as one summary line, and a tool result with its call
+ * on the line above it, so the buffer has no fold-guarded call lines to move.
+ */
+export function createRouter(
+  send: (event: ForwardedEvent) => void,
+  log: WorkbenchLog,
+): Router {
+  const chunker = createChunker();
+  /** Display lines for calls whose result has not arrived, by tool call id. */
+  const calls = new Map<string, string>();
+  /** The thinking of the message coming through, until its end. */
+  let thinking = "";
+  /** The id of the last assistant message, which the tools it starts belong to. */
+  let entry: string | undefined;
+
+  const sendAll = (events: ForwardedEvent[]): void => {
+    for (const event of events) {
+      send(event);
+    }
+  };
+
+  const router = (event: SessionEvent): void => {
+    switch (event.type) {
+      case "thinking":
+        thinking += event.delta;
+        return;
+      case "tool_start": {
+        calls.set(event.call, callLine(event.name, event.args));
+        if (entry !== undefined) {
+          void log.write({
+            type: "tool_call",
+            id: entry,
+            name: event.name,
+            args: event.args,
+          });
+        }
+        return;
+      }
+      case "text":
+        sendAll(chunker({ type: "text", delta: event.delta }));
+        return;
+      case "message_start": {
+        // A call runs before its result arrives, so its line waits for the result's message.
+        let text = event.text ?? "";
+        if (event.call !== undefined) {
+          text = [calls.get(event.call), text]
+            .filter((part) => part !== undefined && part !== "")
+            .join("\n");
+          calls.delete(event.call);
+        }
+        sendAll(
+          chunker(
+            text === ""
+              ? { type: "message_start", role: event.role }
+              : { type: "message_start", role: event.role, text },
+          ),
+        );
+        return;
+      }
+      case "message_end": {
+        let shown: ForwardedEvent = event;
+        if (event.role === "assistant") {
+          entry = event.id;
+          const text = thinking;
+          thinking = "";
+          if (text !== "") {
+            void log.write({ type: "thinking", id: event.id, text });
+            shown = {
+              ...event,
+              thinking: thinkingLine(event.id, preview(text)),
+            };
+          }
+        }
+        sendAll(chunker(shown));
+        return;
+      }
+      case "end":
+        sendAll(chunker(event));
+        return;
+    }
+  };
+  router.flush = (): void => {
+    sendAll(chunker.flush());
+  };
+  router.drained = () => log.drained();
+  return router;
 }
 
 export interface SessionOptions {
@@ -312,7 +435,7 @@ function handleMessageStart(event: {
     content?: string | Array<{ type: string; text?: string }>;
     toolCallId?: string;
   };
-}): ForwardedEvent | undefined {
+}): SessionEvent | undefined {
   const { message } = event;
   if (message.role === "toolResult" && message.content) {
     const content =
@@ -339,7 +462,7 @@ function handleMessageEnd(
   event: { type: "message_end"; message: HintMessage },
   idOf: (message: object) => string | undefined,
   argsOf: ArgsOf,
-): ForwardedEvent | undefined {
+): SessionEvent | undefined {
   const id = idOf(event.message);
   return isTagged(event.message.role) && id
     ? {
@@ -354,19 +477,13 @@ function handleMessageEnd(
 function handleMessageUpdate(event: {
   type: "message_update";
   assistantMessageEvent: { type: string; delta?: string };
-}): ForwardedEvent | undefined {
+}): SessionEvent | undefined {
   const update = event.assistantMessageEvent;
   switch (update.type) {
-    case "text_start":
-      return { type: "text_start" };
     case "text_delta":
       return { type: "text", delta: update.delta || "" };
-    case "thinking_start":
-      return { type: "thinking_start" };
     case "thinking_delta":
       return { type: "thinking", delta: update.delta || "" };
-    case "thinking_end":
-      return { type: "thinking_end" };
     default:
       return undefined;
   }
@@ -377,21 +494,13 @@ function handleToolExecutionStart(event: {
   toolCallId: string;
   toolName: string;
   args: unknown;
-}): ForwardedEvent {
+}): SessionEvent {
   return {
     type: "tool_start",
     call: event.toolCallId,
     name: event.toolName,
     args: event.args,
   };
-}
-
-function handleToolExecutionEnd(event: {
-  type: "tool_execution_end";
-  toolName: string;
-  isError: boolean;
-}): ForwardedEvent {
-  return { type: "tool_end", name: event.toolName, isError: event.isError };
 }
 
 function handleAgentEnd(event: {
@@ -411,7 +520,7 @@ export function forward(
   event: AgentSessionEvent,
   idOf: (message: object) => string | undefined,
   argsOf: ArgsOf = () => undefined,
-): ForwardedEvent | undefined {
+): SessionEvent | undefined {
   switch (event.type) {
     case "message_start":
       return handleMessageStart(event);
@@ -421,8 +530,6 @@ export function forward(
       return handleMessageUpdate(event);
     case "tool_execution_start":
       return handleToolExecutionStart(event);
-    case "tool_execution_end":
-      return handleToolExecutionEnd(event);
     case "agent_end":
       return handleAgentEnd(event);
     default:
@@ -620,25 +727,29 @@ export function createSessions(
 
     // Each event is forwarded a microtask after its listener, in order, so a message_end sees its saved entry.
     let queue = Promise.resolve();
-    const chunker = createChunker();
+    const router = createRouter(
+      (event) => {
+        send(nvim, event);
+      },
+      createWorkbenchLog(request.log),
+    );
     session.subscribe((event) => {
       queue = queue.then(() => {
         const forwarded = forward(event, idOf, argsOf);
         if (forwarded) {
-          for (const chunk of chunker(forwarded)) {
-            send(nvim, chunk);
-          }
+          router(forwarded);
         }
       });
     });
     const workbench = {
       model: request.model,
       session,
-      drained: () => queue,
+      drained: async () => {
+        await queue;
+        await router.drained();
+      },
       flush: () => {
-        for (const chunk of chunker.flush()) {
-          send(nvim, chunk);
-        }
+        router.flush();
       },
     };
     workbenches.set(request.workbench, workbench);

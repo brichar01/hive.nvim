@@ -229,6 +229,8 @@ local function send(text, path)
     tools = settings.tools,
     workbench = vim.fn.fnamemodify(path, ":t:r"),
     cwd = vim.fn.getcwd(),
+    -- Where the raw thinking and tool calls go, next to the workbench.
+    log = vim.fn.fnamemodify(path, ":r") .. ".log",
   })
 end
 
@@ -270,16 +272,13 @@ function M.on_echo(text)
 end
 
 ---@class Hive.Agent.Event
----@field type "message_start"|"message_end"|"text_start"|"text"|"thinking_start"|"thinking"|"thinking_end"|"tool_start"|"tool_end"|"end"
----@field text? string a tool result's output, on its message_start
+---@field type "message_start"|"message_end"|"text"|"end"
+---@field text? string a tool result's call and output, on its message_start
 ---@field role? "user"|"assistant"|"toolResult"
 ---@field id? string session entry id
 ---@field hint? string what the message holds, on its message_end
----@field call? string tool call id, on a tool_start and its tool result's message_start
+---@field thinking? string the message's thinking on one line, on its message_end
 ---@field delta? string
----@field name? string
----@field args? any
----@field isError? boolean
 ---@field error? string
 
 ---@param event Hive.Agent.Event
@@ -287,29 +286,14 @@ function M.on_event(event)
   local ui = require("hive.ui")
   if event.type == "message_start" then
     ui.mark_start(event.role)
-    local call = event.call and ui.take_call(event.call)
-    if call then
-      ui.append(call .. "\n")
-    end
     if event.text and event.text ~= "" then
       ui.append(event.text)
     end
   elseif event.type == "message_end" then
-    ui.tag(event.role, event.id, event.hint)
-  elseif event.type == "thinking_start" then
-    ui.start_thinking()
-  elseif event.type == "text_start" then
-    ui.end_thinking()
+    ui.tag(event.role, event.id, event.hint, event.thinking)
   elseif event.type == "text" then
-    ui.append_reply(event.delta)
-  elseif event.type == "thinking" then
     ui.append(event.delta)
-  elseif event.type == "thinking_end" then
-    ui.end_thinking()
-  elseif event.type == "tool_start" then
-    ui.add_call(event.call, ("`%s %s`"):format(event.name, vim.json.encode(event.args)))
   elseif event.type == "end" then
-    ui.end_thinking()
     if event.error then
       ui.append("\n**Error:** " .. event.error)
       require("hive.util").error("Hive prompt: " .. event.error)

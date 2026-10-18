@@ -12,7 +12,7 @@ test("truncate makes one line, and keeps a number of non-whitespace characters w
   assert.equal(truncate("abcdefghij klmnopqrstuvwxyz", 20), "abcdefghij klmnopqrst");
 });
 
-test("truncate removes what would close the comment or add a fold marker", () => {
+test("truncate removes what would close the comment or pose as a tag", () => {
   assert.equal(truncate("a --> b"), "a -> b");
   assert.equal(truncate("hive:end x"), "hive end x");
 });

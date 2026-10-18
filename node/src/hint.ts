@@ -1,4 +1,4 @@
-/** Hints for the workbench's entry tags, so a closed fold says what it holds. */
+/** Hints for the workbench's entry tags, so each entry says what it holds. */
 
 /** Non-whitespace characters a text hint keeps. */
 export const TEXT_LIMIT = 20;
@@ -46,7 +46,7 @@ const listed = (output: string): string[] => output.split("\n").filter((line) =>
 /**
  * One line, safe inside the tag. With `limit`, it keeps that many non-whitespace characters.
  *
- * `--` would close the HTML comment, and `hive:` could add a fold marker.
+ * `--` would close the HTML comment, and `hive:` could pose as a tag.
  */
 export function truncate(text: string, limit = Infinity): string {
   const line = text
