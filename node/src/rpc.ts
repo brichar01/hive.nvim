@@ -130,7 +130,6 @@ export function createHandlers(
 
     // Download the summary model now, so the first thinking line does not wait on it.
     load: (nvim) => download(nvim),
-
     prompt: (nvim, args) => sessions.prompt(nvim, parsePromptRequest(args[0])),
   };
 }

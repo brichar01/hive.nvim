@@ -348,6 +348,24 @@ local agent_cmds = {
     end,
   },
 
+  -- Show the thinking and tool calls logged for `<hash>` as virtual lines below the cursor.
+  log = {
+    impl = function(args)
+      local Util = require("hive.util")
+      local hash = args[1]
+      if not hash then
+        return Util.error("Hive log: missing message hash")
+      end
+      local err = require("hive.log").show(hash)
+      if err then
+        return Util.error("Hive log: " .. err)
+      end
+    end,
+    complete = function(arg_lead)
+      return require("hive.log").complete(arg_lead)
+    end,
+  },
+
   -- Override the agent's `model`, `thinking` level or active `tools` until Neovim exits. With no value, show the
   -- current one.
   set = {

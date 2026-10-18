@@ -245,9 +245,11 @@ The raw thinking and every tool call go to `<workbench>.log` beside the workbenc
 instead: one JSON object per line, with the entry id, a timestamp and a type of
 either `thinking` or `tool_call`. A tool result's output stays out of the buffer
 too, so its line is only what the call found. A reply ends with `End response to aaaaaaaa`,
-naming the prompt it answered. To chat in the workbench itself, write below that
-line and run `:Hive chat`. It sends that text as the prompt and appends the reply
-below it.
+naming the prompt it answered. To read a message's logged thinking and tool calls,
+run `:Hive log <hash>` with the hash from its header: the entries appear as virtual
+lines below the cursor. `:Hive log` completes the hashes in the current workbench's
+log. To chat in the workbench itself, write below that line and run `:Hive chat`.
+It sends that text as the prompt and appends the reply below it.
 
 To change the model, thinking level or tools until Neovim exits, use `:Hive set`. A
 new model starts a new session, and the conversation history is lost. A new thinking
@@ -346,6 +348,7 @@ Full documentation lives in [`:help hive`](https://github.com/brichar01/hive.nvi
 | `hive.context.diff` | `git diff` of a file |
 | `hive.context.path` | Buffer paths and `<path>:<line>` references |
 | `hive.workbench` | The project's Markdown workbench files |
+| `hive.log` | Reads a workbench's `.log` and shows a message's entries |
 
 `hive.direct.curl` knows nothing about the endpoints. The request body goes to
 curl's stdin (`--data-binary @-`) so large prompts never reach the command line.
