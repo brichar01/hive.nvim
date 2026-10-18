@@ -35,6 +35,27 @@ Run all commands in this guide from the root of the hive.nvim checkout.
    Stop it with `Ctrl-C`, then delete the socket file with
    `rm /tmp/hive-check.sock`.
 
+## Fetch the summary model
+
+A message's thinking line comes from a small model that runs beside the agent.
+The first summary downloads it, about 480MB, so that reply waits or shows the
+start of the thinking instead. Download it ahead of time, without starting a
+service or an agent session:
+
+```sh
+make download-model
+```
+
+`node/` has the same command as `npm run download-model`. It keeps the model
+where the service looks for it, `HIVE_MODEL_DIR` if set and node-llama-cpp's
+`~/.node-llama-cpp/models` otherwise, and prints the file's path when it is
+done. Run it in the same environment as the service: a container and the host
+have separate home directories.
+
+`:Hive load` does the same from Neovim. It sends `load` to the service, which
+answers through `hive.agent.on_load` with the progress, then the model's path, or
+why the download failed.
+
 ## Run the service for one Neovim
 
 1. In Neovim, send a message:

@@ -260,11 +260,40 @@ function M.chat()
   return send(text, path)
 end
 
+---Download the summary model the thinking line uses, so the first summary does not wait on it.
+---The service reports the download back through |hive.agent.on_load()|.
+---@return string|nil err
+function M.load()
+  return M.notify("load")
+end
+
 -- -------------------------------------------- Callbacks from the service ---------------------------------------------
 
 ---@param text string
 function M.on_echo(text)
   require("hive.util").info(text)
+end
+
+---@class Hive.Agent.Load
+---@field status "downloading"|"ready"|"error"
+---@field percent? integer how much of the model is downloaded
+---@field path? string where the model is, once the download is done
+---@field error? string why the download failed
+
+---Show the summary model's download: its progress on the message line, its end as a notification.
+---@param update Hive.Agent.Load
+function M.on_load(update)
+  local Util = require("hive.util")
+  if update.status == "downloading" then
+    -- The message line, so each percent replaces the last one instead of stacking up.
+    vim.schedule(function()
+      vim.api.nvim_echo({ { ("Hive load: %d%%"):format(update.percent or 0) } }, false, {})
+    end)
+  elseif update.status == "ready" then
+    Util.info("Hive load: model ready at " .. (update.path or "?"))
+  else
+    Util.error("Hive load: " .. (update.error or "the download failed"))
+  end
 end
 
 ---@class Hive.Agent.Event

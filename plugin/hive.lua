@@ -338,6 +338,16 @@ local agent_cmds = {
     end,
   },
 
+  -- Download the summary model the thinking lines use, so the first one does not wait on it.
+  load = {
+    impl = function()
+      local err = require("hive.agent").load()
+      if err then
+        require("hive.util").error("Hive load: " .. err)
+      end
+    end,
+  },
+
   -- Override the agent's `model`, `thinking` level or active `tools` until Neovim exits. With no value, show the
   -- current one.
   set = {

@@ -2,16 +2,16 @@
 
 import { truncate } from "./hint.ts";
 import { createLogger } from "./log.ts";
-import type { LlamaChatSession } from "node-llama-cpp";
+import type { JinjaTemplateChatWrapper, LlamaChatSession, LlamaModel } from "node-llama-cpp";
 
 const log = createLogger("summary");
 
 /**
- * The model a summary comes from: a half-billion parameter instruct model, quantised to run on a
- * CPU in about a second. It is downloaded on first use into `MODEL_DIR_ENV`'s directory.
+ * The model a summary comes from: a 0.6B parameter model, quantised to run on a CPU in about a
+ * second. It is downloaded on first use into `MODEL_DIR_ENV`'s directory.
  */
 export const MODEL_URI =
-  "hf:bartowski/Qwen2.5-0.5B-Instruct-GGUF/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf";
+  "hf:bartowski/Qwen_Qwen3-0.6B-GGUF/Qwen_Qwen3-0.6B-Q4_K_M.gguf";
 
 /** Where models are kept, when set. Unset uses node-llama-cpp's own `~/.node-llama-cpp/models`. */
 export const MODEL_DIR_ENV = "HIVE_MODEL_DIR";
@@ -67,6 +67,32 @@ export function summaryPrompt(thinking: string): string {
 export function summaryLine(output: string): string {
   const line = truncate(output).replace(LABEL, "").replace(MARKER, "").replace(EDGES, "");
   return truncate(SENTENCE.exec(line)?.[0] ?? line, SUMMARY_CHARS);
+}
+
+export interface ModelOptions {
+  /** The model file to load, or the URI to download it from. Defaults to `MODEL_URI`. */
+  model?: string;
+  /** Where models are kept and downloaded to. Defaults to `MODEL_DIR_ENV`'s value, if set. */
+  dir?: string;
+  /** Draw the download progress. Defaults to `false`, keeping the service's stdout clean. */
+  progress?: boolean;
+  /** Called as the model downloads, for a caller that reports the progress itself. */
+  onProgress?: (status: { totalSize: number; downloadedSize: number }) => void;
+}
+
+/**
+ * The path `options.model` has on disk, downloading it first if it is not there. The summarizer
+ * and `download.ts` share it, so both look in the same place.
+ */
+export async function resolveModel(options: ModelOptions = {}): Promise<string> {
+  const nlc = await import("node-llama-cpp");
+  return nlc.resolveModelFile(options.model ?? MODEL_URI, {
+    directory: options.dir ?? process.env[MODEL_DIR_ENV],
+    download: "auto",
+    // A terminal wants the progress bar; the service's stdout carries the msgpack stream.
+    cli: options.progress ?? false,
+    onProgress: options.onProgress,
+  });
 }
 
 /** The model call a summary makes: the prompt in, the model's answer out. */
@@ -140,25 +166,44 @@ function capped(work: Promise<string>, ms: number): Promise<string> {
   });
 }
 
+/**
+ * How a session talks to `model`: its own template, with reasoning turned off. Qwen3 opens a
+ * thinking block before it answers, and a summary has room for one line, not a reasoning block;
+ * the model's template takes `enable_thinking: false` for exactly that. A model whose GGUF has no
+ * template keeps the wrapper node-llama-cpp resolves for it.
+ */
+function chatWrapper(
+  nlc: typeof import("node-llama-cpp"),
+  model: LlamaModel,
+): JinjaTemplateChatWrapper | undefined {
+  const template = model.fileInfo.metadata.tokenizer.chat_template;
+  if (template === undefined || template.trim() === "") {
+    return undefined;
+  }
+  return new nlc.JinjaTemplateChatWrapper({
+    template,
+    tokenizer: model.tokenizer,
+    reasoning: false,
+  });
+}
+
 /** The model call a summarizer makes: a small Llama model, downloaded and loaded on first use. */
 function localModel(model: string, dir: string | undefined): Ask {
   let ready: Promise<LlamaChatSession> | undefined;
 
   const load = async (): Promise<LlamaChatSession> => {
-    const nlc = await import("node-llama-cpp");
-    // `download: "auto"` fetches the model the first time, and `cli: false` keeps the console
-    // clear: this process's stdout carries the msgpack stream.
     log.info("looking for %s", model);
-    const path = await nlc.resolveModelFile(model, {
-      directory: dir,
-      download: "auto",
-      cli: false,
-    });
+    // Quiet, so the console stays clear: this process's stdout carries the msgpack stream.
+    const path = await resolveModel({ model, dir });
+    const nlc = await import("node-llama-cpp");
     log.info("loading %s", path);
     const llama = await nlc.getLlama({ gpu: false });
     const loaded = await llama.loadModel({ modelPath: path });
     const context = await loaded.createContext({ contextSize: CONTEXT_TOKENS });
-    return new nlc.LlamaChatSession({ contextSequence: context.getSequence() });
+    return new nlc.LlamaChatSession({
+      contextSequence: context.getSequence(),
+      chatWrapper: chatWrapper(nlc, loaded),
+    });
   };
 
   return async (prompt: string): Promise<string> => {

@@ -6,6 +6,7 @@
   "main": "src/main.ts",
   "scripts": {
     "start": "node src/main.ts",
+    "download-model": "node src/download.ts",
     "typecheck": "tsc",
     "lint": "eslint .",
     "test": "node --test \"test/**/*.test.ts\"",

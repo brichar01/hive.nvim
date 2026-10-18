@@ -1,8 +1,5 @@
 /** Hints for the workbench's entry lines, so each entry says what it holds. */
 
-/** Non-whitespace characters a bash command keeps in its hint. */
-export const COMMAND_LIMIT = 40;
-
 /** The parts of a Pi message the hints read. */
 export interface HintMessage {
   role: string;
@@ -81,7 +78,7 @@ export const toolHints: Record<string, ToolHint> = {
     target: ({ path, edits }) => `${str(path)} (${plural(Array.isArray(edits) ? edits.length : 1, "edit")})`,
   },
   bash: {
-    target: ({ command }) => truncate(str(command), COMMAND_LIMIT),
+    target: ({ command }) => truncate(str(command)),
     failure: (output) => {
       const code = /Command exited with code (\d+)/.exec(output)?.[1];
       return code ? `exit ${code}` : "failed";

@@ -1,5 +1,3 @@
-<div align="center">
-  <h1>🐝&nbsp;&nbsp;hive.nvim&nbsp;&nbsp;🐝 </h1>
 
   <p align="center">
     <a href="https://github.com/brichar01/hive.nvim/actions/workflows/ci.yml">
@@ -225,16 +223,23 @@ workbench for you.
 Each message in the workbench starts with a line naming it and its entry in the
 agent session: `You (aaaaaaaa):` for a prompt, `Response (dddddddd):` for a reply
 and `Tool (cccccccc): grep "hive" lua/: 4 matches` for a tool result, which says
-what the call acted on and what it found. The hash is the first eight characters
-of the entry id. A message's thinking shows as one line above its reply,
+what the call acted on and what it found. A bash call shows its whole command,
+folded onto the one line. The hash is the first eight characters of the entry id.
+A message's thinking shows as one line above its reply,
 `Thinking (bbbbbbbb): Checking the fold logic and its guard`.
 
 That line is a summary, written by a small model that runs beside the agent
-(node-llama-cpp, a 0.5B instruct model). The first summary downloads it, about
-380MB, and loads it; until it answers, and whenever a summary takes more than a
+(node-llama-cpp, Qwen3-0.6B). The first summary downloads it, about
+480MB, and loads it; until it answers, and whenever a summary takes more than a
 few seconds, the line shows the start of the thinking instead, so a missing or
 slow model never holds a reply up. `HIVE_MODEL_DIR` says where models are kept,
 and defaults to node-llama-cpp's own `~/.node-llama-cpp/models`.
+
+To fetch the model before an agent session, run `:Hive load` in Neovim, which
+starts the service and shows the download's progress on the message line. Or run
+`make download-model` in the hive.nvim checkout, or `npm run download-model` in
+`node/`. Both download to the same place; the command prints the file's path when
+it is done.
 
 The raw thinking and every tool call go to `<workbench>.log` beside the workbench
 instead: one JSON object per line, with the entry id, a timestamp and a type of

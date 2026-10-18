@@ -1,4 +1,4 @@
-.PHONY: test test-one lint format typecheck check node-typecheck node-lint node-test node-check dev clean measure-consumers measure-prefill
+.PHONY: test test-one lint format typecheck check node-typecheck node-lint node-test node-check download-model dev clean measure-consumers measure-prefill
 
 test:
 	nvim -l tests/minit.lua --minitest $(FILE)
@@ -32,6 +32,11 @@ node-test:
 	cd node && npm test
 
 node-check: node-typecheck node-lint node-test
+
+# Fetch the small model that writes the thinking line, so the first summary does
+# not wait on it. Needs no agent session. HIVE_MODEL_DIR says where it goes.
+download-model:
+	cd node && npm run download-model
 
 # Re-measures §7.4 / [R§11.9]: which servers can say what calls the target,
 # and by which request. Needs the language servers on PATH or in mason's bin;

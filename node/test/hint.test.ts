@@ -39,6 +39,15 @@ test("bash shows the command, and the exit code when it fails", () => {
   assert.equal(result("bash", { command: "sleep 99" }, "Command timed out", true), "bash sleep 99 (failed)");
 });
 
+test("bash keeps the whole command, however long, on one line", () => {
+  const command = "cd node && npm run typecheck && npm run lint && npm run check";
+  assert.equal(result("bash", { command }, "ok"), `bash ${command}`);
+  assert.equal(
+    result("bash", { command: "set -euo pipefail\ncd hive.nvim\nstylua --check lua/" }, "ok"),
+    "bash set -euo pipefail cd hive.nvim stylua --check lua/",
+  );
+});
+
 test("grep, find and ls count what they found", () => {
   const grep = "lua/a.lua:3: set_folds(win)\nlua/a.lua-4- end\nlua/b.lua:9: set_folds(0)\n\n[50 matches limit reached]";
   assert.equal(result("grep", { pattern: "set_folds", path: "lua/" }, grep), 'grep "set_folds" lua/: 2 matches');
