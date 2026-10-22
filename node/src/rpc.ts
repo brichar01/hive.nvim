@@ -3,11 +3,10 @@ import { createLogger } from "./log.ts";
 import {
   isThinkingLevel,
   type PromptRequest,
-  resolveTools,
-  type Sessions,
   THINKING_LEVELS,
-  TOOLS,
-} from "./session.ts";
+} from "./protocol.ts";
+import type { Sessions } from "./sessions.ts";
+import { resolveTools, TOOLS } from "./tools.ts";
 import { resolveModel } from "./summary.ts";
 
 const log = createLogger("model");

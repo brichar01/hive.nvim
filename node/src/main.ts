@@ -2,7 +2,8 @@ import { parseCommandLine } from "./cli.ts";
 import { createConnection } from "./connection_factory.ts";
 import { createLogger, setLevel } from "./log.ts";
 import { createHandlers } from "./rpc.ts";
-import { createSessions, takeApiKey } from "./session.ts";
+import { takeApiKey } from "./credentials.ts";
+import { createSessions } from "./sessions.ts";
 
 // ------- Logging -------
 
