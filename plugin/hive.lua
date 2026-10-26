@@ -500,3 +500,21 @@ end
 register("Hive", agent_cmds, "Drive the agent service")
 register("HiveBare", bare_cmds, "Send a prompt straight to the configured endpoint")
 register("HiveContext", context_cmds, "Select, gather and copy code context")
+
+-- -------------------------------------------------- Enclosing scope --------------------------------------------------
+
+local scope_group = vim.api.nvim_create_augroup("hive.scope", { clear = true })
+
+vim.api.nvim_create_autocmd({ "BufReadPost", "BufEnter", "CursorHold" }, {
+  group = scope_group,
+  callback = function(args)
+    require("hive.context.scope").refresh(args.buf)
+  end,
+})
+
+vim.api.nvim_create_autocmd("BufWipeout", {
+  group = scope_group,
+  callback = function(args)
+    require("hive.context.scope").forget(args.buf)
+  end,
+})

@@ -57,26 +57,17 @@ local function contains(outer, inner)
   return starts_after and ends_before
 end
 
---- Parse text with treesitter and collect its method, class and container nodes.
+--- Collect the method, class and container nodes of a parsed tree.
 ---
---- @param lines string[] text to parse
+--- @param parser vim.treesitter.LanguageTree
 ---
---- @param ft string filetype of the text
+--- @param source string|integer text or buffer the parser reads
 ---
---- @return gather.Entry[] outermost matches below the root, empty when the filetype has no parser
-function M.nodes(lines, ft)
-  local lang = vim.treesitter.language.get_lang(ft)
-  if not lang then
-    return {}
-  end
-
-  local source = table.concat(lines, "\n")
-  local has_parser, parser = pcall(vim.treesitter.get_string_parser, source, lang)
-  if not has_parser then
-    return {}
-  end
-
-  local query = query_for(ft, lang)
+--- @param ft string
+---
+--- @return gather.Entry[] outermost matches below the root
+function M.tree(parser, source, ft)
+  local query = query_for(ft, parser:lang())
   if not query then
     return {}
   end
@@ -97,6 +88,27 @@ function M.nodes(lines, ft)
     end
   end
   return roots
+end
+
+--- Parse text with treesitter and collect its method, class and container nodes.
+---
+--- @param lines string[] text to parse
+---
+--- @param ft string filetype of the text
+---
+--- @return gather.Entry[] outermost matches below the root, empty when the filetype has no parser
+function M.nodes(lines, ft)
+  local lang = vim.treesitter.language.get_lang(ft)
+  if not lang then
+    return {}
+  end
+
+  local source = table.concat(lines, "\n")
+  local has_parser, parser = pcall(vim.treesitter.get_string_parser, source, lang)
+  if not has_parser then
+    return {}
+  end
+  return M.tree(parser, source, ft)
 end
 
 --- Read a file, detect its filetype and collect its nodes with `nodes`.

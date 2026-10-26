@@ -228,6 +228,18 @@ end
 --- Fields of a wrapper node, such as a decorated or exported definition, that hold the definition.
 local wrapped_fields = { "definition", "declaration" }
 
+--- The definition inside a wrapper node, or the node itself when it wraps nothing.
+---
+--- @param node TSNode
+---
+--- @return TSNode
+function M.unwrap(node)
+  for _, field in ipairs(wrapped_fields) do
+    node = node:field(field)[1] or node
+  end
+  return node
+end
+
 --- Text of a node up to its body, on one line, without the trailing `:`, `{` or `=>`.
 --- A node with no body, such as a call or a statement, gives its first line.
 ---
@@ -237,9 +249,7 @@ local wrapped_fields = { "definition", "declaration" }
 ---
 --- @return string
 function M.signature(node, lines)
-  for _, field in ipairs(wrapped_fields) do
-    node = node:field(field)[1] or node
-  end
+  node = M.unwrap(node)
   local body = node:field("body")[1]
   local text
   if body then
@@ -254,6 +264,28 @@ function M.signature(node, lines)
     text = lines[node:start() + 1]
   end
   return vim.trim(text:gsub("%s+", " "))
+end
+
+--- Fields that hold a node's name, in the order to try them. C nests the name in one
+--- or more `declarator`s, and its `type` is the return type. Rust names an impl by its `type`.
+local name_fields = { "name", "declarator", "type" }
+
+--- Name of a definition, such as `Foo` for a class or `bar` for a method.
+---
+--- @param node TSNode
+---
+--- @param source string|integer text or buffer the node was parsed from
+---
+--- @return string? nil for an anonymous node, such as a lambda or an arrow function
+function M.name(node, source)
+  node = M.unwrap(node)
+  for _, field in ipairs(name_fields) do
+    local child = node:field(field)[1]
+    if child then
+      return M.name(child, source) or vim.treesitter.get_node_text(child, source)
+    end
+  end
+  return nil
 end
 
 --- @param ft string? filetype to look up (default: current buffer)
