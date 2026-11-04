@@ -1,3 +1,4 @@
+local path = require("hive.context.path")
 local selection = require("hive.context.selection")
 
 local M = {}
@@ -130,24 +131,32 @@ function M.nodes_from_file(filename)
   return M.nodes(lines, ft), lines
 end
 
---- Draw the output of `nodes` as a tree of signatures.
+--- Draw the output of `nodes` as a tree of `<signature> [:<first>-<last>]` lines.
 ---
 --- @param entries gather.Entry[]
 ---
 --- @param lines string[] text the nodes were parsed from
 ---
+--- @param offset integer? lines before `lines[1]` in the source file, 0 by default
+---
 --- @return string[] one line for each node
-function M.format(entries, lines)
+function M.format(entries, lines, offset)
+  offset = offset or 0
+  local function label(node)
+    local first, last = selection.node_lines(node)
+    return ("%s [%s]"):format(selection.signature(node, lines), path.line_range(first + offset, last + offset))
+  end
+
   local out = {}
   local function draw(children, prefix)
     for i, entry in ipairs(children) do
       local last = i == #children
-      table.insert(out, prefix .. (last and "└─ " or "├─ ") .. selection.signature(entry.node, lines))
+      table.insert(out, prefix .. (last and "└─ " or "├─ ") .. label(entry.node))
       draw(entry.children, prefix .. (last and "   " or "│  "))
     end
   end
   for _, entry in ipairs(entries) do
-    table.insert(out, selection.signature(entry.node, lines))
+    table.insert(out, label(entry.node))
     draw(entry.children, "")
   end
   return out
@@ -269,8 +278,9 @@ function M.implementation(buf, pos)
   local out = {}
   for _, item in ipairs(locations(buf, pos, "textDocument/implementation")) do
     local lines, ft = read(item.filename)
-    local node = ft and defining_node(M.nodes(lines, ft), item.lnum - 1)
-    local first, last = item.lnum, item.lnum
+    local lnum = item.lnum or 1
+    local node = ft and defining_node(M.nodes(lines, ft), lnum - 1)
+    local first, last = lnum, lnum
     if node then
       first, last = selection.node_lines(node)
     end
@@ -278,8 +288,7 @@ function M.implementation(buf, pos)
     if #out > 0 then
       table.insert(out, "")
     end
-    local ref = relative(item.filename) .. ":" .. first
-    table.insert(out, last > first and ref .. "-" .. last or ref)
+    table.insert(out, relative(item.filename) .. path.line_range(first, last))
     vim.list_extend(out, vim.list_slice(lines, first, last))
   end
   return out

@@ -187,7 +187,7 @@ local context_cmds = {
       end
       local lines = vim.api.nvim_buf_get_lines(0, first, last, false)
 
-      local outline = gather.format(gather.nodes(lines, vim.bo.filetype), lines)
+      local outline = gather.format(gather.nodes(lines, vim.bo.filetype), lines, first)
       if #outline == 0 then
         return require("hive.util").error("HiveContext outline: no nodes to outline")
       end

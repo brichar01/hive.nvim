@@ -15,12 +15,15 @@ function M.relative()
   return path
 end
 
+---@param line1 integer
+---@param line2 integer
+---@return string `:<line1>-<line2>`, or `:<line1>` for a single line
+function M.line_range(line1, line2)
+  return line2 > line1 and (":%d-%d"):format(line1, line2) or ":" .. line1
+end
+
 function M.relative_with_line(line1, line2)
-  local ref = M.relative() .. ":" .. line1
-  if line2 > line1 then
-    ref = ref .. "-" .. line2
-  end
-  return ref
+  return M.relative() .. M.line_range(line1, line2)
 end
 
 ---`text` under its `<path>:<line1>-<line2>` reference, or `text` alone for a buffer with no file.
