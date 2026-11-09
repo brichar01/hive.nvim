@@ -518,3 +518,14 @@ vim.api.nvim_create_autocmd("BufWipeout", {
     require("hive.context.scope").forget(args.buf)
   end,
 })
+
+-- ------------------------------------------------------- Focus -------------------------------------------------------
+
+-- Milliseconds since the epoch, so the MCP server can compare it across Neovim processes.
+vim.api.nvim_create_autocmd("FocusGained", {
+  group = vim.api.nvim_create_augroup("hive.focus", { clear = true }),
+  callback = function()
+    local sec, usec = vim.uv.gettimeofday()
+    vim.g.hive_focused_at = sec * 1000 + math.floor(usec / 1000)
+  end,
+})

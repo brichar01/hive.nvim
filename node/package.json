@@ -6,6 +6,7 @@
   "main": "src/main.ts",
   "scripts": {
     "start": "node src/main.ts",
+    "mcp": "node src/mcp.ts",
     "download-model": "node src/download.ts",
     "typecheck": "tsc",
     "lint": "eslint .",
@@ -14,8 +15,10 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^1.1.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "neovim": "^5.5.0",
-    "node-llama-cpp": "^3.22.2"
+    "node-llama-cpp": "^3.22.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

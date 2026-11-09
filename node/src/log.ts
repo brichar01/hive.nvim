@@ -51,3 +51,25 @@ export const silent: Logger = {
   info: noop,
   debug: noop,
 };
+
+/** Send `console` output to stderr through a logger, so nothing a library prints reaches stdout. */
+export function captureConsole(): void {
+  const stray = createLogger("console");
+  console.log = stray.info;
+  console.info = stray.info;
+  console.debug = stray.debug;
+  console.warn = stray.warn;
+  console.error = stray.error;
+}
+
+/** A logger for the `neovim` client. The client logs every message at info, so its info counts as debug here. */
+export function clientLogger(): Logger & { level: Level } {
+  const client = createLogger("client");
+  return {
+    level: "debug",
+    info: client.debug,
+    warn: client.warn,
+    error: client.error,
+    debug: client.debug,
+  };
+}
