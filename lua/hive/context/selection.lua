@@ -116,6 +116,7 @@ M.node_types = {
     rust = { "struct_expression", "array_expression" },
     lua = { "table_constructor" },
     typescript = { "object", "array" },
+    proto = { "block_lit" },
   },
   method = {
     python = { "function_definition", "decorated_definition" },
@@ -129,11 +130,13 @@ M.node_types = {
       "generator_function_declaration",
       "arrow_function",
     },
+    proto = { "rpc" },
   },
   class = {
     python = { "class_definition" },
     rust = { "impl_item", "trait_item", "struct_item", "enum_item" },
     typescript = { "class_declaration", "interface_declaration" },
+    proto = { "message", "enum", "service", "extend" },
   },
   container = {
     python = { "module" },
@@ -154,6 +157,7 @@ M.node_types = {
       "export_statement",
       "program",
     },
+    proto = { "oneof", "source_file" },
   },
 }
 
